@@ -109,10 +109,12 @@ python3 tools/build_release.py        # 产物在 dist/
 3. **确认推送结果**
    本次改动已提交到 fork 的 `main`：`app/java/org/aliveclean/` 下新增 3 个类、`CleanHooks.java` 已覆盖，无需手动复制。如需独立分支，从本次 commit 切出即可。
 
-4. **构建出包**（三选一，回我一句就行）
-   - 放进 fork 后推 `v*` 标签，走 GitHub Actions 出 APK
-   - 给我可用的 Linux 构建环境输出，我来编
-   - 要我把 `tools/build_release.py` 改成可在 Android IDE / Termux 里跑（另开一轮）
+4. **构建出包（已跑通）**
+   fork 不继承上游 Actions Secrets，首次手动触发在 `Load signing key` 直接失败。已提交 `8abb71c`：缺 `OPENALIVE_KEYSTORE_B64` 时跳过该步，由 `tools/build_release.py` 自动生成 `local/development.jks`；编译步骤也不再把空密码注入环境。重跑 run `44599949579` 全绿，`Compile and verify` 通过，产物在 Actions 的 `OpenAlive-arm64-v8a` artifact，APK 为 `OpenAlive-0.4.42-preview-arm64-v8a.apk`。
+
+   想用原签名覆盖安装，在仓库 Settings → Secrets 补 `OPENALIVE_KEYSTORE_B64` 和 `OPENALIVE_STORE_PASSWORD`，workflow 会自动切回密钥签名。
+
+   注：`Publish release` 仍会跑 `tools/verify_release.py` 与 `release/expected.json` 的逐字节校验；源码已改动，哈希必然不同，发布会被拦下，但 APK artifact 照常产出。要发 Release 需另开一轮更新清单。
 
 5. **真机验证一次**
    LSPosed 作用域勾 `系统框架(android)` + `系统界面(com.android.systemui)`；`com.oplus.wallpapers` 在 LineageOS 上不存在，不用找。打开 App 选一款不依赖 AOD 的样式（山脉 / 银河），息屏 → 亮屏 → 解锁各一次，把 `adb logcat -s AliveClean` 贴回来。我按日志接阶段 1。
