@@ -10,24 +10,25 @@
 - 留光支持独立相框照片、取景和角度调整
 - 魅族动态壁纸与通知光效（来通知短暂点亮息屏、系统光效、Flyme 圆圈与双侧光带）
 - Vivo Alive 液态、趣味光栅、闪卡；小米 Alive 月球、雪山、几何、土星环、地球、火星（素材已内置，首次点击自动准备）
-- 自绘 AOD 时钟与场景过渡：`AospBridge` 用 AOSP keyguard 生命周期重建 mode 0/1/2，`AospSceneLink` 复刻壁纸服务消费的 Binder 通道与场景消息
+- 息屏→锁屏→桌面连贯过渡：壁纸自身用 `ACTION_SCREEN_OFF/ON`、`ACTION_USER_PRESENT` 和 Display doze 状态驱动 mode 0/1/2，**不依赖 LSPosed**；`AospBridge` 只是可选的精细信号增强
 
 渲染器、Rust 库、素材和壁纸编辑器与上游一致，平台无关。
 
 ## 要求
 
 - **LineageOS / AOSP 系 ROM**（已在 sm8750 / lineage-24.0 上核对 SystemUI 类名）
-- **Root + LSPosed**（Zygisk 版亦可）
-- LSPosed 作用域只勾两项：`系统框架(android)` 和 `系统界面(com.android.systemui)`
+- **壁纸本身不需要 Root 或 LSPosed**：标准动态壁纸，应用后锁屏/桌面/息屏场景即可生效
+- Root + LSPosed 仅用于可选的精细场景信号（生物解锁、wakefulness），作用域保持 `系统框架(android)` + `系统界面(com.android.systemui)`
 - `com.oplus.wallpapers` 在 LineageOS 上不存在，不要找、不要勾
-- **改完作用域必须重启手机**，hook 只在进程启动时注入
+- 首页 `LSP 未激活` **不代表壁纸坏了**；这台 NyaZygisk/KernelSU 组合下 LSPosed 只注入 system_server、不注入 SystemUI，属已知现象
+- 改完作用域仍需**整机重启**，hook 只在进程启动时注入
 
 ## 安装与验证
 
 1. 在 [Actions](https://github.com/xingmihai/OpenAlive/actions) 里取最新成功运行的 `OpenAlive-arm64-v8a` artifact，安装 APK
 2. LSPosed 里启用模块，确认上述两项作用域；换签名后建议取消再重勾一次
 3. 整机重启
-4. 打开 App，首页应显示 `LSP 已激活` + `ROOT 已授权`；那行文字可点击立即重查
+4. 打开 App 选「山脉」或「银河」应用壁纸；桌面、锁屏立即生效，息屏→亮屏→解锁会切 mode 0/1/2
 5. 选「山脉」或「银河」应用壁纸，然后息屏 → 亮屏 → 解锁
 
 抓日志（推荐，绕过任何日志 App 的权限与过滤限制）：

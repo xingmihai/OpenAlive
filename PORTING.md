@@ -195,3 +195,41 @@ su -c 'unzip -l $(pm path org.aliveclean | cut -d: -f2) | grep -i xposed'
 ```
 
 设备信息（来自 `props.txt`）：`ro.product.device=OP6113L1`、`ro.build.version.release=17`、`ro.build.display.id=CP2A.260605.016`、`ro.build.type=userdebug`；LSPosed 跑在 **NyaZygisk v2.5-383 / KernelSU** 上（不是官方 Zygisk Next），`scopes.txt` 里 `com.android.systemui:appclips.screenshot` 等子进程也都在，框架本身工作正常。
+
+
+---
+
+## 十、06:31 诊断包：修正结论，壁纸改为自给自足
+
+用户澄清 06:22 那轮**没有重启**，且**锁屏/桌面一直有效果**，只有息屏没效果。因此第九节/第十节草稿里「模块整体未加载 → `AMBIENT_WALLPAPER` 权限被拒 → 桌面锁屏全失效」的判断**不成立**，已作废（那份草稿未提交）。06:22 包里 `LiveWallpaperPreview: Failure setting wallpaper / SecurityException` 只是用户**重新应用**壁纸时被拒，之前已设上的壁纸仍在正常显示。
+
+06:31 包是**重启后**导出的，给出稳定结论：
+
+| 证据 | 内容 |
+|---|---|
+| `modules_2026-11-20T06:30:01.log:5-7` | `(system)[org.aliveclean,...] handleLoadPackage android` / `AOSP ambient permission adapter on ...checkPermission` / `hooks done in android` —— **framework 分支稳定加载** |
+| 同一份日志 | `(com.android.systemui)` 命中 **0**，无 `AOSP bridge loaded`、无 `activation receiver registered` |
+| `verbose:174` | `W/LSPosedService: system service is not ready, skip scope request`（06:30:04.458） |
+| `full.log:3920` | `am_proc_start: com.android.systemui` 在 06:30:04.451，比上面早 7 ms |
+| `scopes.txt:338-340` / `db_scope.txt:21-22` | 配置完全正确：`system` + `com.android.systemui` 都挂 `org.aliveclean`，`CleanHooks` 入口也在 |
+
+**三轮诊断包（06:04 / 06:22 / 06:31）一致**：LSPosed 在这台 **NyaZygisk v2.5-383 + KernelSU** 上能注入 `android`（system_server），但**始终不注入 `com.android.systemui`**。这不是作用域、模块开关或 APK 路径问题（06:31 已重启、路径已刷新、framework 正常）。继续在 LSPosed 侧排查收益为零。
+
+**息屏没效果的真正原因（代码层）**：`CleanWallpaper` 第 49 行本来就注册了 `ACTION_SCREEN_OFF / SCREEN_ON / USER_PRESENT`，但 `state` receiver 只调 `update(); refreshVisibility();`。`update()` → `SceneState.fallback(ambient, k.isKeyguardLocked())`，而 `ambient` 只在 `onAmbientModeChanged`（AOSP 不回调）或 `scene(0,…)` 时被置 true —— **没有任何人发 mode 0，fallback 永远只能得出 1/2**。所以锁屏和桌面有效（靠 KeyguardManager），息屏永远停在 mode 2 或 1。之前以为必须靠 SystemUI 里的 `AospBridge` 发 mode 0，其实壁纸自己就能发。
+
+**本批修正（让壁纸彻底脱离 Xposed）**
+
+1. `CleanWallpaper.state` receiver：按广播直接 `scene(0/1/2, …)`，phase 分别用 1（sleeping）/ 2（waking）/ 3（authenticated unlock），与 `SceneState.accept` 的相位约束完全吻合。推演：`SCREEN_OFF→0`、`SCREEN_ON→1`、`USER_PRESENT→2`、再次 `SCREEN_OFF→0`，循环无拒绝
+2. `refreshVisibility()` 增加兜底：Display 处于 `STATE_DOZE` / `STATE_DOZE_SUSPEND` 且当前不是 mode 0 时补发 `scene(0,…)`。屏幕广播在壁纸进程被冻结时可能延迟或丢失，Display 状态变化一定触发 `onDisplayChanged`
+3. `app/res/xml/wallpaper.xml` → `android:supportsAmbientMode="false"`（与 `xiaomi_wallpaper.xml` 一致）。系统不再要求 `AMBIENT_WALLPAPER` 签名权限，壁纸普通安装即可设上，`tools/check_*.py` 对该文件无断言
+4. `CleanHooks` 删掉 `WallpaperInfo.supportsAmbientMode` hook 与 `android` 分支的 `installFramework` 调用（仅保留一行 `framework scope unused on LineageOS` 存活日志），模块降级为**可选增强**：能注入 SystemUI 时多给生物解锁 / wakefulness 信号，注入不了也不影响任何显示
+
+`xposed_scope` 两项不变，避免用户重新配置；`AospBridge.installFramework` 保留在源码里作为参考，不再由入口调用。场景链路（广播、Display doze、`SceneChannel`、`AospSceneLink` 的 Binder 通道与 `onCommand`）都不依赖 `supportsAmbientMode` 或 `onAmbientModeChanged`。
+
+**代价与边界**：AOSP 的 AOD 由 SystemUI 自绘，动态壁纸 Surface 在 `STATE_OFF` 时本来就不渲染；doze 状态下会渲染。若这台 ROM 的 AOD 完全不显示壁纸窗口，息屏画面仍需阶段 1 自己弹 AOD 窗口（`AodClockHost` 依赖 SystemUI 视图层级，不能直接用）。但 mode 0 现在一定会切到，渲染器状态是对的。
+
+**验证顺序**（装本批包后）
+
+1. 直接打开 App 选「山脉」或「银河」应用壁纸 —— 无需重启、无需 LSPosed，桌面/锁屏立即生效
+2. 息屏 → 亮屏 → 解锁，用 `su -c 'logcat -v threadtime AliveClean:I *:S'` 观察 `Scene mode=0/1/2`（需 `Diagnostics.TRACE`；不打开也能从画面判断）
+3. LSPosed 首页 `LSP 未激活` 可以忽略，不要再为它反复装包或重启

@@ -24,7 +24,25 @@ public final class CleanWallpaper extends WallpaperService {
         final android.database.ContentObserver area=new android.database.ContentObserver(new android.os.Handler(android.os.Looper.getMainLooper())){
             @Override public void onChange(boolean selfChange){readOfficialRegion();}
         };
-        final BroadcastReceiver state=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent intent){if(Intent.ACTION_CONFIGURATION_CHANGED.equals(intent.getAction()))readWallpaperDim();update();refreshVisibility();}};
+        /**
+         * Platform screen events drive the scene machine directly in the wallpaper
+         * process. This does NOT depend on LSPosed: three diagnostic dumps showed
+         * the module is injected into system_server but never into SystemUI on
+         * this NyaZygisk/KernelSU build. Without this, no one ever sends mode 0
+         * (AOD) and the lockscreen/desktop only work because KeyguardManager
+         * fallback produces modes 1/2.
+         */
+        final BroadcastReceiver state=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent intent){
+            String action=intent.getAction();
+            if(Intent.ACTION_CONFIGURATION_CHANGED.equals(action))readWallpaperDim();
+            if(!isPreview()){
+                long now=android.os.SystemClock.uptimeMillis();
+                if(Intent.ACTION_SCREEN_OFF.equals(action))scene(0,true,now,1,0,Float.NaN,Float.NaN);
+                else if(Intent.ACTION_SCREEN_ON.equals(action))scene(1,true,now,2,0,Float.NaN,Float.NaN);
+                else if(Intent.ACTION_USER_PRESENT.equals(action))scene(2,true,now,3,0,Float.NaN,Float.NaN);
+            }
+            update();refreshVisibility();
+        }};
         final BroadcastReceiver scenes=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent intent){
             if(isPreview())return;
             if(AospSceneLink.ACTION_LAYOUT.equals(intent.getAction())){
@@ -105,6 +123,11 @@ public final class CleanWallpaper extends WallpaperService {
         private void refreshVisibility(){
             android.view.Display display=engineDisplay();
             int state=display==null?android.view.Display.STATE_UNKNOWN:display.getState();
+            // Doze is the AOSP AOD state. SCREEN_OFF broadcasts can be delayed
+            // or dropped while the wallpaper process is frozen, so use the
+            // display state itself as a second, authoritative trigger for mode 0.
+            if(!isPreview()&&(state==android.view.Display.STATE_DOZE||state==android.view.Display.STATE_DOZE_SUSPEND)
+                    &&scenesState.mode()!=0)scene(0,true,android.os.SystemClock.uptimeMillis(),1,0,Float.NaN,Float.NaN);
             boolean next=wallpaperVisible&&state!=android.view.Display.STATE_UNKNOWN&&state!=android.view.Display.STATE_OFF;
             boolean displayChanged=state!=lastDisplayState;
             lastDisplayState=state;
