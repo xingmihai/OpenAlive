@@ -2,6 +2,7 @@ package org.aliveclean;
 
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.util.Log;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
@@ -42,6 +43,7 @@ final class AospBridge {
         installPowerEvents(cl);
         installUnlockEvents(cl);
         XposedBridge.log("AliveClean: AOSP bridge loaded");
+        Log.i(TAG, "AOSP bridge loaded");
     }
 
     /** Grab a real SystemUI Context; the broadcast fallback lives in AospSceneLink. */
@@ -58,6 +60,7 @@ final class AospBridge {
             failure("SystemUIApplication", new ClassNotFoundException("no AOSP application class"));
             return;
         }
+        Log.i(TAG, "AOSP application=" + application.getName());
         try {
             XposedHelpers.findAndHookMethod(application, "onCreate", new XC_MethodHook() {
                 @Override protected void afterHookedMethod(MethodHookParam p) {
@@ -73,6 +76,7 @@ final class AospBridge {
         Class<?> mediator = firstExisting(cl,
                 "com.android.systemui.keyguard.KeyguardViewMediator",
                 "com.android.systemui.keyguard.KeyguardViewMediatorImpl");
+        Log.i(TAG, "AOSP mediator=" + (mediator == null ? "missing" : mediator.getName()));
         if (mediator == null) {
             failure("KeyguardViewMediator", new ClassNotFoundException("sleep/wake owner missing"));
             return;
@@ -151,6 +155,8 @@ final class AospBridge {
 
         Class<?> animation = XposedHelpers.findClassIfExists(
                 "com.android.systemui.keyguard.KeyguardUnlockAnimationController", cl);
+        Log.i(TAG, "AOSP unlock owners: monitor=" + (monitor != null)
+                + " biometric=" + (biometric != null) + " animation=" + (animation != null));
         if (animation != null) {
             try {
                 XposedBridge.hookAllMethods(animation,
@@ -180,6 +186,7 @@ final class AospBridge {
                 "com.android.server.pm.PackageManagerService$IPackageManagerImpl",
                 "com.android.server.pm.IPackageManagerImpl",
                 "com.android.server.pm.PackageManagerServiceUtils");
+        Log.i(TAG, "AOSP framework=" + (target == null ? "missing, use priv-app" : target.getName()));
         if (target == null) {
             XposedBridge.log("AliveClean: AOSP permission adapter unavailable; use priv-app install");
             return;
@@ -202,6 +209,7 @@ final class AospBridge {
                 if (!XposedBridge.hookAllMethods(target, method, grant).isEmpty()) {
                     XposedBridge.log("AliveClean: AOSP ambient permission adapter on "
                             + target.getName() + "." + method);
+                    Log.i(TAG, "AOSP permission hook " + target.getName() + "." + method);
                 }
             } catch (Throwable error) {
                 failure("framework " + method, error);

@@ -1,6 +1,7 @@
 package org.aliveclean;
 
 import android.app.WallpaperInfo;
+import android.util.Log;
 import de.robv.android.xposed.*;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
@@ -17,10 +18,16 @@ public final class CleanHooks implements IXposedHookLoadPackage {
 
     @Override public void handleLoadPackage(XC_LoadPackage.LoadPackageParam p) {
         String pkg = p.packageName;
+        boolean colorOsUi = "com.android.systemui".equals(pkg)
+                && Platform.colorOsSystemUi(p.classLoader);
+        if ("android".equals(pkg) || "com.android.systemui".equals(pkg)) {
+            Log.i("AliveClean", "platform=" + (colorOsUi ? "ColorOS" : "AOSP")
+                    + " pkg=" + pkg);
+        }
 
         if ("com.android.systemui".equals(pkg)) {
             ModuleActivationHook.install();
-            if (Platform.colorOsSystemUi(p.classLoader)) {
+            if (colorOsUi) {
                 ColorOsNativeClockFonts.install(p.classLoader);
                 ColorOsBridge.install(p.classLoader);
             } else {

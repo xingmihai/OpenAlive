@@ -118,4 +118,8 @@ python3 tools/build_release.py        # 产物在 dist/
    `Publish release` 仍会跑 `tools/verify_release.py` 与 `release/expected.json` 的逐字节校验；源码已改动，哈希必然不同，发布会被拦下，但 APK artifact 照常产出。要发 Release 需另开一轮更新清单。
 
 5. **真机验证一次**
-   LSPosed 作用域勾 `系统框架(android)` + `系统界面(com.android.systemui)`；`com.oplus.wallpapers` 在 LineageOS 上不存在，不用找。打开 App 选一款不依赖 AOD 的样式（山脉 / 银河），息屏 → 亮屏 → 解锁各一次，把 `adb logcat -s AliveClean` 贴回来。我按日志接阶段 1。
+   LSPosed 作用域勾 `系统框架(android)` + `系统界面(com.android.systemui)`；`com.oplus.wallpapers` 在 LineageOS 上不存在，不用找。**改完作用域要重启手机**，因为 hook 只在进程启动时注入。打开 App 选一款不依赖 AOD 的样式（山脉 / 银河），息屏 → 亮屏 → 解锁各一次，把日志贴回来。我按日志接阶段 1。
+
+   Logcat Reader 过滤填法：**「Tag标记」填 `AliveClean`**，信息 / 包名 / PID / TID / 时间范围全部留空，七个级别按钮全点，「排除」不要勾。包名不能填 `org.aliveclean`——日志产生在 `com.android.systemui` 和 `system_server` 进程，填了反而漏掉桥接层。等价的 adb 命令是 `adb logcat -s AliveClean`。
+
+   诊断日志会直接打印这台机器上命中的 AOSP 类名（`AOSP application=`、`AOSP mediator=`、`AOSP framework=`）以及每次 `AOSP scene mode=`，所以不再需要单独 pull `SystemUI.apk` 反编译。LSPosed 管理器自带的「日志」页可交叉核对 XposedBridge.log。

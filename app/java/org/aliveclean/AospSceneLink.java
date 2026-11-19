@@ -93,6 +93,7 @@ final class AospSceneLink {
         } else {
             context.registerReceiver(receiver, filter);
         }
+        Log.i(TAG, "AOSP link start");
         refresh();
     }
 
@@ -104,6 +105,8 @@ final class AospSceneLink {
     static void dispatch(int mode, boolean animate, int phase, String state) {
         long time = SystemClock.uptimeMillis();
         main.post(() -> {
+            Log.i(TAG, "AOSP scene mode=" + mode + " phase=" + phase
+                    + " state=" + state + " selected=" + selected);
             if (!selected) return;
             stateOrder.accept(mode, time, phase);
             if (stateOrder.mode() != mode) return;
@@ -135,6 +138,8 @@ final class AospSceneLink {
                     info = manager.getWallpaperInfo();
                 }
                 selected = info != null && "org.aliveclean".equals(info.getPackageName());
+                Log.i(TAG, "AOSP wallpaper selected=" + selected
+                        + (info == null ? " (no WallpaperInfo)" : " pkg=" + info.getPackageName()));
                 if (selected) {
                     connect();
                     if (lastMode >= 0) {
@@ -181,6 +186,7 @@ final class AospSceneLink {
                     if (selected) refresh();
                 }, 0);
                 channel = new Messenger(binder);
+                Log.i(TAG, "AOSP scene channel connected");
             } catch (Throwable error) {
                 Log.w(TAG, "AOSP scene channel unavailable", error);
             } finally {
@@ -210,6 +216,7 @@ final class AospSceneLink {
                     .setPackage("org.aliveclean")
                     .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
                     .putExtras(data);
+            Log.i(TAG, "AOSP send fallback broadcast what=" + what);
             c.sendBroadcast(event);
         }
         connect();
