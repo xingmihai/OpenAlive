@@ -1,154 +1,33 @@
-# OpenAlive → LineageOS / AOSP 移植（第一批）
+# OpenAlive · LineageOS 专用适配说明
 
-目标：让 OpenAlive 在 LineageOS 上先跑起来，且不改渲染器、Rust、素材和构建脚本。
-
-本批只动 `app/java/org/aliveclean/` 下的 4 个文件：
-
-| 文件 | 动作 |
-|---|---|
-| `Platform.java` | 新增，按当前进程可见的类判断 ColorOS / AOSP |
-| `AospSceneLink.java` | 新增，复刻与壁纸服务之间的 Binder 通道和场景消息 |
-| `AospBridge.java` | 新增，用 AOSP keyguard 生命周期重建 mode 0/1/2 |
-| `CleanHooks.java` | 覆盖，按平台分流两条桥 |
-
-`app/assets/xposed_init` 不变，入口仍是 `org.aliveclean.CleanHooks`。
+本 fork 只面向 **LineageOS / AOSP**。上游 `Maga-King/OpenAlive` 面向 ColorOS 17；这里移除了 ColorOS 运行路径、OEM 作用域、OEM 权限 shim 和所有 `su` 调用的息屏配置，只保留一条 AOSP 路径。渲染器、Rust、素材与构建脚本沿用上游。
 
 ---
 
-## 一、源码里真实的耦合点
+## 一、运行时路径（唯一）
 
-入口与作用域
-
-- `app/assets/xposed_init` → `org.aliveclean.CleanHooks`
-- `@array/xposed_scope`：`android`、`com.android.systemui`、`com.oplus.wallpapers`
-- `AndroidManifest.xml` 的 `<queries>`：`com.oplus.wallpapers`、`com.oplus.aod.AodMachineHelperProvider`、`com.coloros.gallery3d` / `com.oplus.gallery3d`、`com.heytap.themestore` / `com.oplus.themestore`
-
-framework（system_server）
-
-- `com.android.server.pm.IPackageManagerBase.checkPermission` — 强制授予 `AMBIENT_WALLPAPER`（OEM 私有类，AOSP 不存在）
-- `WallpaperInfo.supportsAmbientMode()` — 对本包返回 true（AOSP 通用，保留）
-
-SystemUI（ColorOS 专有，全部在 `ColorOsBridge` / `ColorOsAodClock` / `ColorOsUnlockHandoff` 里以反射硬编码）
-
-- `com.oplus.systemui.aod.display.SmoothTransitionController` — 场景状态机：`shouldWindowBeTransparent`、`updateCurrentUiState`、`getInstance`、`getPowerOnUiState`
-- `com.oplus.systemui.aod.aodclock.constant.AodData` — `getInstance`、`isPanoramicAod`、`mAodIsInShow`、`mAodOptionsMgr`
-- `com.oplus.systemui.qs.observer.SuperPowerSaveSettingsObserver`
-- `com.oplus.systemui.keyguard.OplusKeyguardViewMediatorExImpl` — `onStartedGoingToSleep` / `onStartedWakingUp` / `keyguardGone`
-- `com.oplus.systemui.aod.display.AODDisplayUtil` — `requestScreenStateWhileDreamingStart`、`acquireWakeLockInWorkThread`、`mPerformAodType`
-- `com.oplus.systemui.keyguard.anim.OplusKeyguardAppearAnimControllerImpl$PanoramicAodAppearAnimRunner*`
-- `com.oplus.keyguard.OplusKeyguardUnlockAnimationControllerExImpl`、`OplusKeyguardUpdateMonitorExImpl`、`KeyguardRapidUnlockUtils`
-- `com.oplusos.keyguard.utils.KeyguardThreadUtil`、`com.oplusos.systemui.common.sched.OplusSysUiSchedMgr`
-- `com.oplus.systemui.keyguard.ui.interactor.OplusKgdMaskInteractor`、`OplusKgdAnimParams$PanelPanoramic`
-- `com.oplus.systemui.keyguard.clockstyle.KeyguardStyleClockControllerImpl`、`com.oplus.systemui.aod.anim.OplusAODMaskAnimController`
-- `com.oplus.systemui.keyguard.oneshot.OneShotAnimController` / `OneShotAnimState`
-- 挂在 AOSP 命名空间下的 OEM 注入类：`com.android.systemui.DependencyEx`、`CentralSurfacesImpl`、`com.android.keyguard.OplusKeyguardDependencyEx`
-- 私有通道：`WallpaperManager.sendWallpaperCommand("wallpaper.support.local.dark.mode")`、`Settings.Secure oplus_customize_settings_dark_wallpaper`
-
-## 二、三分类
-
-**直接复用（平台无关）**
-
-- 187 个渲染 / UI 类：`CleanWallpaper`、`WallpaperRenderer`、各类 `*Renderer` / `*Motion`、`FrameCrop` / `PhotoCrop`、`Vivo*`、`Xiaomi*`、`Flyme*`
-- 自绘时钟：`AodClockHost`、`AodClockView`、`AodClockFace`、`FlymeAliveAodFace`、`NativeClockFaces`
-- 配置与 IPC：`SceneProvider`、`SceneChannel`、`SceneOptions`、`SceneState`、`SceneProvider.CONFIGURATION`
-- `native/*.rs` → `libalive_clean.so`、`app/assets/` 全部素材、`vendor/flyme/editor-ui.dex`
-- `WallpaperInfo.supportsAmbientMode` hook
-
-**本批已重写**
-
-- 场景状态机 → `AospBridge` 用 `KeyguardViewMediator` / `KeyguardUpdateMonitor` / `BiometricUnlockController` / `KeyguardUnlockAnimationController` 重建；另有 `ACTION_SCREEN_OFF` / `SCREEN_ON` / `USER_PRESENT` 广播兜底，保证即使所有类名都不匹配，场景切换仍然送达
-- Binder 通道 → `AospSceneLink` 自己走 `SceneProvider.call("connect")`，消息字段与 `ColorOsBridge.send(1, b)` 完全一致：`mode` / `animate` / `time` / `phase` / `clock_wake`
-- 权限 → `AospBridge.installFramework` 尝试 AOSP 的 `PackageManagerService` 检查点；按 uid 检查的分支需要把 APK 作为 priv-app 安装
-
-**LineageOS 上没有宿主，需另做或放弃**
-
-- 注入 ColorOS 系统锁屏编辑器的魅族 / 澎湃 / Vivo 时钟面板
-- 全景 AOD、息屏通知光效、指纹 AOD 时钟遮罩、OPlus 原生时钟字体与样式
-- `SmoothTransitionController` 的窗口透明时序、`OplusSysUiSchedMgr` 的 CPU 保活窗口、`wallpaper.support.local.dark.mode` 调光命令
-
-## 三、阶段路线
-
-- **阶段 0（本批）**：动态壁纸 + 息屏/亮屏/解锁场景切换在 LineageOS 跑通
-- **阶段 1**：AOD 自绘时钟，用 `AodClockHost` 挂到 AOSP keyguard 根 View，替掉 `ColorOsAodClock` 的 oplus 反射
-- **阶段 2**：用 AOSP `KeyguardUnlockAnimationController` 的 remote animation 时长对齐「息屏→锁屏→桌面」衔接
-- **阶段 3（可选）**：直接改 LineageOS SystemUI 源码内嵌，脱离 LSPosed
-
-## 四、构建
-
-仓库不是 Gradle 工程，入口是 `tools/build_release.py`（Python + Rust + aapt2 / javac / D8）。
+`app/assets/xposed_init` → `org.aliveclean.CleanHooks`
 
 ```
-Ubuntu 24.04 / JDK 17 / Python 3.12 / Rust 1.96（rust-toolchain.toml 固定）
-Android SDK Platform 35 + Build Tools 35.0.0 + NDK 29.0.14206865
-rustup target add aarch64-linux-android
-python3 tools/build_release.py        # 产物在 dist/
+com.android.systemui
+  ├─ 平台保护：检测到 SmoothTransitionController 直接拒绝加载（ColorOS 请用上游）
+  ├─ ModuleActivationHook.install()     首页「LSP 已激活」回执
+  └─ AospBridge.install(classLoader)   场景状态机
+
+android (system_server)
+  ├─ AospBridge.installFramework()     AMBIENT_WALLPAPER 权限适配
+  └─ WallpaperInfo.supportsAmbientMode → 对本包返回 true
 ```
 
-推 `v*` 标签可由 GitHub Actions 完成同一套编译并产出 APK。`vendor/flyme/editor-ui.dex` 是预编译 DEX，不参与源码编译。
+`AospSceneLink` 持有全部协议常量（`ACTION` = `org.aliveclean.SCENE`、`ACTION_LAYOUT` = `org.aliveclean.AOD_LAYOUT`、`SENDER_PERMISSION` = `android.permission.STATUS_BAR`）；`CleanWallpaper` 直接引用它们，运行时不再加载任何 ColorOS 类。
 
-## 五·补、真机日志诊断（2026-11-20）
+作用域：`android` + `com.android.systemui`（`@array/xposed_scope`）。`com.oplus.wallpapers` 已从作用域和 `<queries>` 中移除。
 
-第一轮 logcat 只出现 `org.aliveclean` 自己进程的行（同一个 UID / PID），原因通常是 Logcat Reader 的「包名」里填了 `org.aliveclean`，而桥接层跑在 `com.android.systemui` 和 `system_server`，会被这个条件整个滤掉。**过滤页只填「Tag标记」=`AliveClean`，包名一栏必须空着。**
+---
 
-已观察到的三类输出：
+## 二、真机 SystemUI 反编译核对（系统界面_17.apk，44 MB / 3 个 dex）
 
-- `E/AliveClean AOD setup failed` → `RootBridge.prepareAod` 第 35 行硬查 `com.oplus.aod.AodMachineHelperProvider`。这是 App 层的 ColorOS 门槛，壁纸此时其实已经 `commitDraft()` 保存成功，只是弹了个「息屏配置未完成」框。现已改为：检测不到 provider 时走 AOSP 分支直接返回，并打印 `AOSP AOD: no oplus provider; moduleActive=true/false`。
-- `moduleActive` 来自 `ModuleActivation.active()`，读的是 SystemUI 侧 `ModuleActivationHook` 写下的回执，与平台无关。`false` 说明 LSPosed 没把模块注入 SystemUI（作用域没勾 / 没重启 / 模块未启用）；`true` 说明桥接层已加载，之前只是日志被过滤掉。首页的「LSP 检测中 / 已激活」指示灯可交叉核对。
-- `hiddenapi: ... BackgroundBlurDrawable ... from classes2.dex`、`Invalid resource ID 0x00000000`：来自 `vendor/flyme/editor-ui.dex`（魅族官方 UI 预编译 DEX），LineageOS 不放行这些隐藏 API，结果是背景模糊与个别资源失效，**不影响壁纸渲染和场景切换**。`Using generational CollectorTypeCMC GC`、`Unsupported class loader` 是 ART 正常噪声。
-
-需要完整诊断时，最省事的是绕开 Logcat Reader：
-
-```sh
-adb logcat -d -s AliveClean          # 电脑
-su -c 'logcat -d -s AliveClean'      # 手机 root 终端
-```
-
-## 五、需要你做的
-
-1. **设备信息**
-   ```
-   adb shell getprop ro.build.version.release
-   adb shell getprop ro.lineage.version
-   adb shell getprop ro.product.device
-   ```
-   再告诉我是否已 Root + LSPosed、以及刷的是哪个 LineageOS 版本（仓库分支 `lineage-24.0`）。
-
-2. **SystemUI 真实类名**（用来把 `AospBridge` 里的候选类名改成确定值）
-   ```
-   adb shell pm path com.android.systemui
-   adb pull <上一步输出的路径> SystemUI.apk
-   ```
-   把 `SystemUI.apk` 传给我或给个下载链接。同时抓一份日志：
-   ```
-   adb logcat -s AliveClean XposedBridge
-   ```
-
-3. **确认推送结果**
-   本次改动已提交到 fork 的 `main`：`app/java/org/aliveclean/` 下新增 3 个类、`CleanHooks.java` 已覆盖，无需手动复制。如需独立分支，从本次 commit 切出即可。
-
-4. **构建出包（已跑通，正式签名已配置）**
-   fork 不继承上游 Actions Secrets，首次手动触发在 `Load signing key` 失败；`8abb71c` 让缺 Secret 时回落到本地开发密钥，run `44599949579` 全绿。
-
-   现已把 JKS 密钥写入仓库 Secrets：`OPENALIVE_KEYSTORE_B64`、`OPENALIVE_STORE_PASSWORD`、`OPENALIVE_KEY_ALIAS`（`星觅海`）、`OPENALIVE_KEY_PASS`。workflow 把别名和私钥密码透传给编译步骤，`tools/build_release.py` 在检测到 `OPENALIVE_KEY_PASS` 时补 `--key-pass`。CI 产出的 APK 由这把密钥签名，证书 SHA-256：
-   `C4BD2C4E5C4A1F924C060F3A233ACB5A7DA2C36D29A59ED4A6E2375C06ABC6E1`
-
-   `Publish release` 仍会跑 `tools/verify_release.py` 与 `release/expected.json` 的逐字节校验；源码已改动，哈希必然不同，发布会被拦下，但 APK artifact 照常产出。要发 Release 需另开一轮更新清单。
-
-5. **真机验证一次**
-   LSPosed 作用域勾 `系统框架(android)` + `系统界面(com.android.systemui)`；`com.oplus.wallpapers` 在 LineageOS 上不存在，不用找。**改完作用域要重启手机**，因为 hook 只在进程启动时注入。打开 App 选一款不依赖 AOD 的样式（山脉 / 银河），息屏 → 亮屏 → 解锁各一次，把日志贴回来。我按日志接阶段 1。
-
-   Logcat Reader 过滤填法：**「Tag标记」填 `AliveClean`**，信息 / 包名 / PID / TID / 时间范围全部留空，七个级别按钮全点，「排除」不要勾。包名不能填 `org.aliveclean`——日志产生在 `com.android.systemui` 和 `system_server` 进程，填了反而漏掉桥接层。等价的 adb 命令是 `adb logcat -s AliveClean`。
-
-   诊断日志会直接打印这台机器上命中的 AOSP 类名（`AOSP application=`、`AOSP mediator=`、`AOSP framework=`）以及每次 `AOSP scene mode=`，所以不再需要单独 pull `SystemUI.apk` 反编译。LSPosed 管理器自带的「日志」页可交叉核对 XposedBridge.log。
-
-
-## 六、真机 SystemUI 反编译核对（系统界面_17.apk，44 MB / 3 个 dex）
-
-用户提供 `系统界面_17.apk`（实际为 ZIP，扩展名被加了 `.txt`）。直接解析 3 个 dex 的 string_ids / type_ids / method_ids / proto_ids，共 140803 条唯一字符串。
-
-**平台判定**：`Lcom/oplus/...` 类计数 **0**，`com.oplus.systemui.aod.display.SmoothTransitionController`、`AodData`、`OplusKeyguardViewMediatorExImpl`、`com.android.systemui.DependencyEx` 全部 MISSING → 确认纯 AOSP，`Platform.colorOsSystemUi` 必定返回 false，走 `AospBridge`。
-
-**类命中（描述符形式，全部 FOUND）**
+解析 string_ids / type_ids / method_ids / proto_ids，共 140803 条唯一字符串。`Lcom/oplus/...` 类计数 **0**，`SmoothTransitionController`、`AodData`、`OplusKeyguardViewMediatorExImpl`、`com.android.systemui.DependencyEx` 全部 MISSING → 确认纯 AOSP。
 
 | 用途 | 类 |
 |---|---|
@@ -159,53 +38,84 @@ su -c 'logcat -d -s AliveClean'      # 手机 root 终端
 | 生物解锁 | `com.android.systemui.statusbar.phone.BiometricUnlockController` |
 | 解锁动画 | `com.android.systemui.keyguard.KeyguardUnlockAnimationController` |
 
-另两个候选 `application.SystemUIApplication`、`SystemUIApplication`（旧包）、`KeyguardViewMediatorImpl` 均 MISSING，第一候选即正确。
+另两个候选 `application.SystemUIApplication`、`SystemUIApplication`（旧包）、`KeyguardViewMediatorImpl` 均 MISSING。
 
-**方法签名（method_ids + proto_ids 精确解析）**
+方法签名（method_ids + proto_ids 精确解析）：
 
 ```
-SystemUIApplicationImpl.onCreate()                                    -> V
-KeyguardService$2.onStartedGoingToSleep(I)                            -> V
-KeyguardService$2.onStartedWakingUp(I, Z)                             -> V
-KeyguardService$2.onScreenTurnedOff() / onScreenTurningOn(...)        -> V
-KeyguardUpdateMonitor.setKeyguardGoingAway(Z)                         -> V
-BiometricUnlockController.startWakeAndUnlock(I, BiometricUnlockSource)-> V
-BiometricUnlockController.startWakeAndUnlock(BiometricSourceType, Z)  -> V
+SystemUIApplicationImpl.onCreate()                                     -> V
+KeyguardService$2.onStartedGoingToSleep(I)                             -> V
+KeyguardService$2.onStartedWakingUp(I, Z)                              -> V
+KeyguardUpdateMonitor.setKeyguardGoingAway(Z)                          -> V
+BiometricUnlockController.startWakeAndUnlock(I, BiometricUnlockSource) -> V
+BiometricUnlockController.startWakeAndUnlock(BiometricSourceType, Z)   -> V
 KeyguardUnlockAnimationController.notifyStartSurfaceBehindRemoteAnimation(
-        [AnimatedSurface, [AnimatedSurface, [AnimatedSurface, J, Z)    -> V
+        [AnimatedSurface, [AnimatedSurface, [AnimatedSurface, J, Z)     -> V
 KeyguardViewMediator.keyguardGone() 实际在 KeyguardViewMediator$5
 ```
 
-**修正**：原先 `AospBridge.installPowerEvents` 把 `onStartedGoingToSleep(int)` / `onStartedWakingUp(int)` / `keyguardGone()` 挂在 `KeyguardViewMediator` 上——这台机器上三个方法都不存在，`findAndHookMethod` 会静默抛异常被 `failure()` 吞掉，息屏/亮屏只剩广播兜底。现改为优先 hook `KeyguardService$2`，用 `hookAllMethods` 兼容 `(I)` 与 `(I,Z)` 签名；`keyguardGone` 改挂 `KeyguardViewMediator$5`；保留旧候选做跨分支兼容。同时 `AospSceneLink.dispatch` 加 250 ms 同 mode 去重，避免 binder stub + 广播重复触发。
+`KeyguardViewMediator` 上**不存在** `onStartedGoingToSleep` / `onStartedWakingUp` / `keyguardGone`，早期版本把三者挂在它上面会静默失效。现优先 hook `KeyguardService$2`，用 `hookAllMethods` 兼容 `(I)` 与 `(I,Z)`；`keyguardGone` 挂 `$5`；保留旧候选做跨分支兼容。`AospSceneLink.dispatch` 有 250 ms 同 mode 去重，避免 binder stub 与广播重复触发。
 
-`KeyguardViewMediator` 上仍存在的可用方法：`setShowingLocked(Z, String, Z)`、`handleHide()`、`handleKeyguardDone()`、`cancelKeyguardExitAnimation()`、`finishSurfaceBehindRemoteAnimation(Z)`、`startKeyguardExitAnimation(SurfaceTransition$Params)`——阶段 2 做解锁动画对齐时用这些。
+`KeyguardViewMediator` 上仍可用：`setShowingLocked(Z, String, Z)`、`handleHide()`、`handleKeyguardDone()`、`cancelKeyguardExitAnimation()`、`finishSurfaceBehindRemoteAnimation(Z)`、`startKeyguardExitAnimation(...)` —— 阶段 2 解锁动画对齐用。
 
-framework 侧（`services.jar` / `framework.jar`）不在此 APK 内，`AospBridge.installFramework` 仍靠运行时日志打印 `AOSP framework=...` 确认。若 Binder 连接报 `AMBIENT_WALLPAPER` 权限拒绝，把 APK 作为 priv-app 安装即可。
+---
 
+## 三、已修的坑
 
-## 七、`moduleActive=false` 的确切含义（04:54 日志）
+| 现象 | 根因 | 处理 |
+|---|---|---|
+| 应用壁纸弹「息屏配置未完成」 | `RootBridge.prepareAod` 硬查 `com.oplus.aod.AodMachineHelperProvider` | 改为纯 AOSP 分支，不起 `su` |
+| 首页一直 `moduleActive=false` | 回执是进程内存态；覆盖安装清 App 记录，SystemUI 不自动重发；且旧代码单次直读不发 QUERY | `ModuleActivation.request()` + 最多 800ms 轮询；首页指示灯为准 |
+| 抓不到系统进程日志 | Logcat Reader 未授 `READ_LOGS` 时只能看自身 UID；`main` 缓冲区被 `OPLUS_CHG` 冲爆 | 用 root 终端 `logcat -v threadtime AliveClean:I *:S` |
+| `platform=AOSP` 不出现 | SystemUI 未重启，hook 只在进程启动时注入 | 整机重启 |
 
-日志出现 `AOSP AOD: no oplus provider; moduleActive=false`，说明 **AOD 门槛修复已生效**（不再弹「息屏配置未完成」），但这次 App 进程没拿到 SystemUI 的激活回执。
+`pm grant com.dp.logcatapp android.permission.READ_LOGS && am force-stop com.dp.logcatapp` 可让 Logcat Reader 看全量，但实时 tag 过滤更可靠。
 
-`NativeClockStatusProvider` 的 `module` 是**纯内存、进程生命周期**的 IBinder 回执，注释写明「never persists readiness across a reboot」。写入方只有 SystemUI 侧的 `ModuleActivationHook`（`Application.attach` 时 announce），读取方是 App 自己的 provider。因此：
+---
 
-- **覆盖安装会杀掉 App 进程 → 回执清空**；SystemUI 是常驻进程，不重启手机就不会重新 announce。这是最常见成因，不等于「模块没注入」。
-- 之前 `prepareAod` 里的 `ModuleActivation.active()` 是**单次直读、不发 request 广播**，所以应用壁纸那一瞬间很容易读到 false，即使首页稍后会轮询变绿。已改为先 `ModuleActivation.request(context)` 再最多轮询 800 ms。
-- **权威判断看首页**：`HomeActivationStatus` 会发 `QUERY_MODULE_ACTIVATION` 广播 + 每 2 秒轮询，指示灯显示「LSP 已激活 / 未激活」。比单次 `moduleActive` 可靠。
+## 四、验证步骤
 
-同时注意这份 logcat 里**所有行都是 `Uid(value=10257):11234`（App 自己进程）**，没有一条 `com.android.systemui` / `system_server` 的行。要么 Logcat Reader 的「包名」仍填着 `org.aliveclean`（把系统进程全滤掉），要么模块确实没进 SystemUI。绕开过滤最省事：
+1. 装最新 Actions artifact
+2. LSPosed：模块启用，作用域勾 `android` + `com.android.systemui`；换签名后取消再重勾
+3. **重启手机**
+4. 首页看 `LSP 已激活` / `ROOT 已授权`（点那行立即重查）
+5. `su -c 'logcat -v threadtime AliveClean:I *:S'`，应用壁纸，息屏 → 亮屏 → 解锁
 
-```sh
-adb logcat -d -s AliveClean                     # 电脑
-su -c 'logcat -d -s AliveClean'                 # 手机 root 终端
+期望日志：
+
+```
+LineageOS build: installing AOSP bridge in com.android.systemui
+AOSP bridge loaded
+AOSP wakefulness: binderStub=true sleepHooks=1 wakeHooks=1
+AOSP scene mode=0/1/2 phase=... state=... selected=true
+LineageOS AOD: no OEM provider; moduleActive=true
 ```
 
-**排查顺序（一次做完）**
+`moduleActive=false` 且首页显示「LSP 已激活」时以首页为准；两者都 false 才是 LSPosed 配置问题。
 
-1. 装最新 artifact（本轮补丁）
-2. LSPosed 管理器：模块开关打开；作用域勾 `系统框架(android)` + `系统界面(com.android.systemui)`。签名从开发密钥换成正式 JKS 后，建议把作用域取消再重勾一次，让 LSPosed 重新记录 APK 路径
-3. **重启手机**（不是重启 App、不是重启 SystemUI）——hook 只在进程启动时注入
-4. 开机后打开 App，**不要重新应用壁纸**，直接看首页两个指示灯：`LSP 已激活` + `ROOT 已授权`
-5. 息屏 → 亮屏 → 解锁，抓 `platform=AOSP`、`AOSP bridge loaded`、`AOSP wakefulness: binderStub=true sleepHooks=1 wakeHooks=1`、`AOSP scene mode=0/1/2`
+---
 
-只要第 4 步 `LSP 已激活`，就说明桥接层已加载，壁纸与场景切换是在跑的；`moduleActive` 那行只是瞬时读数，可以忽略。若重启后仍是「LSP 未激活」，那才是作用域 / LSPosed 框架本身的问题。
+## 五、遗留代码说明
+
+`ColorOs*.java`（16 个）、`NativeClock*` 编辑器、`Platform.java`、`PlatformApply.java` 保留在仓库里但**运行时零引用**：
+
+- `ColorOs*` 之间互相引用，`CleanWallpaper` 曾引用其广播常量，多个 `tools/check_*.py` 会校验相关源码，硬删会断编译
+- `NativeClock*` 与 `vendor/flyme/editor-ui.dex` 里仍有 `com.oplus` 资源字符串，属于壁纸编辑器 UI，删了会破坏「山脉 / 银河」等样式
+- `Platform.java` 仅保留供 `PlatformApply` 与独立 provider 检查编译通过，已标注 `@deprecated`
+
+`CleanHooks` 不再加载它们，`CleanWallpaper` 已改用 `AospSceneLink` 常量。若将来要彻底清库，需要先补一套不依赖 OEM 资源的编辑器，再连同 31 个 check 脚本一起重写。
+
+---
+
+## 六、阶段路线
+
+- **已完成**：作用域 / 权限适配、AOSP 场景状态机、真机类名修正、AOD 弹窗与回执诊断、签名接入、LineageOS 专用化
+- **阶段 1**：AOD 自绘时钟接管息屏显示（`AodClockHost` / `AodClockView` 已具备，需接 `AospSceneLink` 的 mode 0 时序）
+- **阶段 2**：解锁动画对齐（`KeyguardViewMediator` 的 `startKeyguardExitAnimation` / `finishSurfaceBehindRemoteAnimation`）
+- **阶段 3**：清理遗留 ColorOS 代码与编辑器资源依赖
+
+---
+
+## 七、构建
+
+签名由 4 个仓库 Secrets 注入，缺失时回落本地开发密钥。`Publish release` 会用 `release/expected.json` 做逐字节校验；源码已改动，哈希必然不同，发布会被拦下，但 APK artifact 照常产出。要发 Release 需重算清单。详见 [BUILD.md](BUILD.md)。

@@ -1,89 +1,46 @@
 package org.aliveclean;
 
 import android.content.Context;
-import java.io.*;
-import java.util.concurrent.TimeUnit;
-import org.json.JSONObject;
 
-/** Invoke only after a user applies this wallpaper. Never execute shell text from a preference. */
+/**
+ * LineageOS-only AOD setup.
+ *
+ * Upstream shells out to an OPlus AOD provider through `su 1000` to switch
+ * ColorOS into panoramic AOD. LineageOS has no such provider and no such
+ * setting: scene transitions are delivered by AospBridge inside SystemUI.
+ * There is nothing to configure through root here, so no shell is executed.
+ */
 final class RootBridge {
-    static void allowClockStartup(Context context)throws Exception {
-        if(android.os.Process.myUid()/100000!=0)throw new IOException("Clock startup setup supports only the primary user");
-        String command="CLASSPATH="+quote(context.getApplicationInfo().sourceDir)
-                +" /system/bin/app_process /system/bin org.aliveclean.PlatformApply clock-startup";
-        Process process=new ProcessBuilder("su","1000","-c",command).redirectErrorStream(true).start();
-        StringBuilder output=new StringBuilder();
-        Thread reader=new Thread(()->{
-            try(BufferedReader in=new BufferedReader(new InputStreamReader(process.getInputStream(),"UTF-8"))){
-                for(String line;(line=in.readLine())!=null;){
-                    synchronized(output){if(output.length()<4096)output.append(line).append('\n');}
-                }
-            }catch(IOException ignored){}
-        },"OpenAliveClockStartupOutput");
-        reader.start();
-        if(!process.waitFor(20,TimeUnit.SECONDS)){
-            process.destroyForcibly();throw new IOException("ColorOS clock startup setup timed out");
-        }
-        reader.join(1000);
-        String result; synchronized(output){result=output.toString();}
-        if(process.exitValue()!=0||!result.contains("\"clockStartupAllowed\":true"))
-            throw new IOException("ColorOS clock startup setup failed: "+result.trim());
+
+    /** No-op on AOSP; kept as the single call site used by the home screen. */
+    static void allowClockStartup(Context context) {
+        android.util.Log.i("AliveClean", "LineageOS: no OEM clock startup setting to apply");
     }
 
-    static String prepareAod(Context context)throws Exception {
-        if(android.os.Process.myUid()/100000!=0)throw new IOException("目前仅支持主用户的息屏配置");
-        if(context.getPackageManager().resolveContentProvider("com.oplus.aod.AodMachineHelperProvider",0)==null){
-            // LineageOS / AOSP has no OPlus AOD provider. Scene transitions are
-            // driven by AospBridge inside SystemUI, so there is nothing to set up
-            // through root here. Log the module receipt from the app process too:
-            // users often filter logcat by package name and would otherwise never
-            // see the SystemUI-side diagnostic lines.
-            // The receipt is process-lifetime only: replacing the APK kills this
-            // app process and clears NativeClockStatusProvider.module, while a
-            // still-running SystemUI does not re-announce on its own. Ask it to
-            // re-announce and poll briefly, otherwise a healthy module reads false
-            // immediately after an update-install.
-            ModuleActivation.request(context);
-            boolean active=false;
-            for(int i=0;i<8&&!active;i++){
-                try{Thread.sleep(100);}catch(InterruptedException interrupted){
-                    Thread.currentThread().interrupt();break;
-                }
-                active=ModuleActivation.active(context);
+    static String prepareAod(Context context) {
+        if (android.os.Process.myUid() / 100000 != 0) {
+            return "壁纸已应用；多用户下场景桥接仅作用于主用户";
+        }
+        // The receipt is process-lifetime only: replacing the APK kills this app
+        // process and clears NativeClockStatusProvider.module, while a still
+        // running SystemUI does not re-announce on its own. Ask it to announce
+        // and poll briefly; the home indicator remains the authoritative check.
+        ModuleActivation.request(context);
+        boolean active = false;
+        for (int i = 0; i < 8 && !active; i++) {
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                break;
             }
-            android.util.Log.i("AliveClean","AOSP AOD: no oplus provider; moduleActive="+active
-                    +" (after request; home indicator is authoritative)");
-            return "壁纸已应用，AOSP 场景切换由系统界面桥接接管";
+            active = ModuleActivation.active(context);
         }
-        String apk=context.getApplicationInfo().sourceDir;
-        String command="CLASSPATH="+quote(apk)+" /system/bin/app_process /system/bin org.aliveclean.PlatformApply panoramic-aod";
-        Process process;
-        try{process=new ProcessBuilder("su","1000","-c",command).redirectErrorStream(true).start();}
-        catch(IOException error){throw new IOException("无法启动 su，请检查 Root 是否可用",error);}
-        StringBuilder output=new StringBuilder();
-        Thread reader=new Thread(()->{
-            try(BufferedReader in=new BufferedReader(new InputStreamReader(process.getInputStream(),"UTF-8"))){for(String line;(line=in.readLine())!=null;){synchronized(output){if(output.length()<65536)output.append(line).append('\n');}}}catch(IOException ignored){}
-        },"AliveApplyOutput");reader.start();
-        if(!process.waitFor(30,TimeUnit.SECONDS)){
-            process.destroyForcibly();
-            boolean started;synchronized(output){started=output.indexOf("ALIVE_ADAPTER_STARTED")>=0;}
-            throw new IOException(started?"已获得 Root，但系统息屏接口响应超时":"su 等待超时，请查看超级用户授权提示");
-        }
-        reader.join(1000);String result; synchronized(output){result=output.toString();}
-        for(String line:result.split("\n"))if(line.startsWith("ALIVE_RESULT ")){
-            JSONObject json=new JSONObject(line.substring(13));
-            if(process.exitValue()==0&&json.optBoolean("ok")){
-                return json.optBoolean("backgroundAllowed")
-                    ?"壁纸已应用，已开启全景息屏并允许后台运行"
-                    :"壁纸已应用；后台运行设置未确认，请在系统电池设置中选择完全允许后台行为";
-            }
-            String stage=json.optString("stage","unknown");
-            String detail=json.optString("error","系统拒绝切换息屏模式");
-            throw new IOException("系统息屏接口失败（"+stage+"）："+detail);
-        }
-        android.util.Log.e("AliveClean","Adapter exit="+process.exitValue()+" output="+result);
-        String detail=result.trim();if(detail.length()>600)detail=detail.substring(detail.length()-600);
-        throw new IOException("息屏辅助进程未返回结果（退出码 "+process.exitValue()+"）"+(detail.isEmpty()?"，请检查超级用户授权":"："+detail));
+        android.util.Log.i(TAG_FALLBACK, "LineageOS AOD: no OEM provider; moduleActive=" + active
+                + " (after request; home indicator is authoritative)");
+        return "壁纸已应用，AOSP 场景切换由系统界面桥接接管";
     }
-    private static String quote(String value){return "'"+value.replace("'","'\"'\"'")+"'";}
+
+    private static final String TAG_FALLBACK = "AliveClean";
+    private RootBridge() {}
 }

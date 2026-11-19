@@ -4,12 +4,10 @@ import android.content.Context;
 import de.robv.android.xposed.XposedHelpers;
 
 /**
- * Runtime capability probe for the ColorOS / AOSP split.
- *
- * The fork has to decide which bridge to install from inside the process that is
- * being hooked, so a ro.build fingerprint or a shared static flag is useless:
- * system_server and SystemUI do not share a heap. Probes here only look at
- * classes and packages that are actually visible to the current loader.
+ * @deprecated Legacy ColorOS capability probe, no longer used by CleanHooks.
+ * This fork is LineageOS-only and takes a single runtime path. The class is
+ * kept so the out-of-tree PlatformApply helper and the independent provider
+ * checks still compile; it is never loaded at runtime on LineageOS.
  */
 final class Platform {
 

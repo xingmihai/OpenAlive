@@ -1,25 +1,67 @@
-# OpenAlive
+# OpenAlive for LineageOS
 
-把 Flyme Alive 的连贯动画带到 ColorOS，让息屏、锁屏和桌面接起来。
+把 Flyme Alive 的连贯动画带到 **LineageOS / AOSP**，让息屏、锁屏和桌面接起来。
 
-目前支持启航、留光、星月、轻启、山脉和银河，可以自选照片。选图后可按完整屏幕比例裁切，支持双指缩放、拖动和复位。留光支持独立相框照片、取景和角度调整，息屏时显示时间、日期和农历。
+> 这是 [`Maga-King/OpenAlive`](https://github.com/Maga-King/OpenAlive) 的 **LineageOS 专用 fork**。上游面向 ColorOS 17，靠 `com.oplus.*` 反射驱动息屏状态机；本 fork 移除了整条 ColorOS 运行路径，只保留 AOSP 桥接。刷了 ColorOS 请回到上游，本 fork 会明确拒绝加载。
 
-另有魅族动态壁纸和通知光效：可以选择来通知时短暂点亮息屏、系统光效，或 Flyme 圆圈与双侧光带；圆圈支持预设和自定义颜色。
+## 包含什么
 
-Vivo Alive 壁纸包含液态、趣味光栅和闪卡，复用原版渲染器；支持自选素材、传感器灵敏度和可见息屏下的动画，完全不可见时暂停。
+- 启航、留光、星月、轻启、山脉、银河，可自选照片；全屏比例裁切、双指缩放、拖动与复位
+- 留光支持独立相框照片、取景和角度调整
+- 魅族动态壁纸与通知光效（来通知短暂点亮息屏、系统光效、Flyme 圆圈与双侧光带）
+- Vivo Alive 液态、趣味光栅、闪卡；小米 Alive 月球、雪山、几何、土星环、地球、火星（素材已内置，首次点击自动准备）
+- 自绘 AOD 时钟与场景过渡：`AospBridge` 用 AOSP keyguard 生命周期重建 mode 0/1/2，`AospSceneLink` 复刻壁纸服务消费的 Binder 通道与场景消息
 
-小米 Alive 壁纸包含月球、雪山、几何、土星环、地球和火星，复用小米原版列表、预览控件与渲染器。六款已经内置，首次点击自动准备，无需下载、导入或安装原版应用。地球、月球和火星各有 5 个落地点。支持桌面翻页联动和原版 AOD 时钟；锁屏使用 ColorOS 时钟。详见[接入与测试记录](docs/xiaomi-wallpapers.md)。
+渲染器、Rust 库、素材和壁纸编辑器与上游一致，平台无关。
 
-ColorOS 系统锁屏编辑器里也加入了魅族、澎湃和 Vivo 时钟，可调字体、颜色和效果，并支持息屏衔接与留光。新增 Vivo 玻璃与模糊效果会随壁纸实时变化。
+## 要求
 
-需要 **Root + LSPosed**。安装后启用模块，勾选系统框架、系统界面和壁纸与个性化（`com.oplus.wallpapers`），重启，再打开应用选择并应用壁纸。目前主要在 ColorOS 17 上适配，其他系统还需要慢慢调。
+- **LineageOS / AOSP 系 ROM**（已在 sm8750 / lineage-24.0 上核对 SystemUI 类名）
+- **Root + LSPosed**（Zygisk 版亦可）
+- LSPosed 作用域只勾两项：`系统框架(android)` 和 `系统界面(com.android.systemui)`
+- `com.oplus.wallpapers` 在 LineageOS 上不存在，不要找、不要勾
+- **改完作用域必须重启手机**，hook 只在进程启动时注入
 
-下载：[Releases](https://github.com/Maga-King/OpenAlive/releases) · 编译：[BUILD.md](BUILD.md)
+## 安装与验证
 
-自实现代码采用 [MIT](LICENSE) 许可。**部分资产来源于魅族22FlymeOS**，官方 UI、字体、壁纸及效果素材不纳入 MIT 授权，详见[资源说明](THIRD_PARTY.md)。
+1. 在 [Actions](https://github.com/xingmihai/OpenAlive/actions) 里取最新成功运行的 `OpenAlive-arm64-v8a` artifact，安装 APK
+2. LSPosed 里启用模块，确认上述两项作用域；换签名后建议取消再重勾一次
+3. 整机重启
+4. 打开 App，首页应显示 `LSP 已激活` + `ROOT 已授权`；那行文字可点击立即重查
+5. 选「山脉」或「银河」应用壁纸，然后息屏 → 亮屏 → 解锁
 
-还在持续完善。遇到问题欢迎提 Issue，带上系统版本、所选样式和复现步骤就好。
+抓日志（推荐，绕过任何日志 App 的权限与过滤限制）：
 
-如果用着顺手，也欢迎请我喝杯奶茶。
+```sh
+su -c 'logcat -v threadtime AliveClean:I *:S'
+```
 
-<img src="docs/donate.png" alt="微信赞赏码" width="320" />
+期望看到：
+
+```
+LineageOS build: installing AOSP bridge in com.android.systemui
+AOSP bridge loaded
+AOSP wakefulness: binderStub=true sleepHooks=1 wakeHooks=1
+AOSP scene mode=0/1/2 ...
+```
+
+`org.aliveclean` 进程里的 `hiddenapi: BackgroundBlurDrawable`、`Invalid resource ID 0x00000000` 来自 `vendor/flyme/editor-ui.dex`（魅族官方预编译 UI），LineageOS 不放行这些隐藏 API，只影响背景模糊，不影响壁纸与场景切换。
+
+## 已知限制
+
+- **AOD 自绘时钟仍在阶段 1**：场景过渡已通，息屏时钟的自绘接管尚未接完
+- 内核里的 `OPLUS_CHG` 是充电硬件驱动日志，与 SystemUI 无 `com.oplus.*` Java 类不矛盾
+- 这台机器 `main` 缓冲区被充电/音频日志冲得极快，事后 `logcat -d` 常抓不到开机日志，用上面的实时过滤命令
+- 上游遗留的 `ColorOs*.java`、`NativeClock*` 编辑器代码与 31 个 `tools/check_*.py` 深度耦合，**保留但运行时零引用**：`CleanHooks` 不再加载它们，`CleanWallpaper` 也已改为引用 `AospSceneLink` 的协议常量
+
+## 编译
+
+见 [BUILD.md](BUILD.md)。签名由仓库 Actions Secrets 注入（`OPENALIVE_KEYSTORE_B64` / `OPENALIVE_STORE_PASSWORD` / `OPENALIVE_KEY_ALIAS` / `OPENALIVE_KEY_PASS`），未配置时回落本地开发密钥。源码已改动，`Publish release` 的逐字节校验会拦下发布，但 APK artifact 照常产出。
+
+## 移植记录
+
+完整的类名/签名核对、修复历程与阶段路线见 [PORTING.md](PORTING.md)。
+
+## 许可
+
+自实现代码采用 [MIT](LICENSE)。**部分资产来源于魅族22 FlymeOS**，官方 UI、字体、壁纸及效果素材不纳入 MIT 授权，详见 [THIRD_PARTY.md](THIRD_PARTY.md)。上游作者与赞赏码见原仓库。

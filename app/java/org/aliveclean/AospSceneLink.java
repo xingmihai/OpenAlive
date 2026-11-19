@@ -23,21 +23,21 @@ import android.util.Log;
 /**
  * Platform-neutral link between a hooked SystemUI and the OpenAlive wallpaper engine.
  *
- * This deliberately does NOT go through ColorOsBridge: that class keeps a lot of
- * OPlus state (aodClock, clocks, immersiveBackdrop, continuousAod) and its private
- * connect() dereferences them. On LineageOS none of those objects exist, so we
- * reproduce only the two things the renderer actually consumes:
+ * This deliberately does NOT go through the legacy ColorOS bridge: that class
+ * keeps OEM-only state and is never loaded in this fork. We reproduce only the
+ * two things the renderer actually consumes:
  *
  *   1. the authenticated Binder channel from SceneProvider.call("connect")
  *   2. Message.what == 1 with {mode, animate, time, phase, clock_wake}
  *
- * Bundle keys, action strings and the SceneState ordering are byte-for-byte the
- * same as ColorOsBridge, so no renderer / Rust / asset change is needed.
+ * The action strings, sender permission and Bundle keys are owned here so the
+ * wallpaper service no longer references any ColorOS class.
  */
 final class AospSceneLink {
 
     static final String ACTION = "org.aliveclean.SCENE";
     static final String ACTION_LAYOUT = "org.aliveclean.AOD_LAYOUT";
+    static final String SENDER_PERMISSION = "android.permission.STATUS_BAR";
     private static final String SCENE_URI = "content://org.aliveclean.scene";
     private static final String TAG = "AliveClean";
 

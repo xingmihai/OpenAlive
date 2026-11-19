@@ -31,13 +31,13 @@ public final class CleanWallpaper extends WallpaperService {
         final BroadcastReceiver state=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent intent){if(Intent.ACTION_CONFIGURATION_CHANGED.equals(intent.getAction()))readWallpaperDim();update();refreshVisibility();}};
         final BroadcastReceiver scenes=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent intent){
             if(isPreview())return;
-            if(ColorOsBridge.ACTION_LAYOUT.equals(intent.getAction())){
+            if(AospSceneLink.ACTION_LAYOUT.equals(intent.getAction())){
                 if(intent.getIntExtra("version",0)!=1)return;
                 AodRegion region=AodRegion.create(intent.getIntExtra("display",-1),intent.getIntExtra("width",0),intent.getIntExtra("height",0),intent.getIntExtra("left",0),intent.getIntExtra("top",0),intent.getIntExtra("right",0),intent.getIntExtra("bottom",0));
                 region(region);
                 return;
             }
-            if(!ColorOsBridge.ACTION.equals(intent.getAction()))return;
+            if(!AospSceneLink.ACTION.equals(intent.getAction()))return;
             int next=intent.getIntExtra("mode",-1);
             if(next>=0&&next<=2)scene(next,intent.getBooleanExtra("animate",true),intent.getLongExtra("time",android.os.SystemClock.uptimeMillis()),intent.getIntExtra("phase",0),intent.getLongExtra("clock_wake",0),intent.getFloatExtra("vivo_night_level",Float.NaN),intent.getFloatExtra("vivo_aod_mask",Float.NaN));
         }};
@@ -52,16 +52,16 @@ public final class CleanWallpaper extends WallpaperService {
             if(!isPreview())SceneChannel.add(this);
             IntentFilter f=new IntentFilter();f.addAction(Intent.ACTION_SCREEN_ON);f.addAction(Intent.ACTION_SCREEN_OFF);f.addAction(Intent.ACTION_USER_PRESENT);
             f.addAction(Intent.ACTION_CONFIGURATION_CHANGED);
-            IntentFilter bridge=new IntentFilter(ColorOsBridge.ACTION);
-            bridge.addAction(ColorOsBridge.ACTION_LAYOUT);
-            // ColorOS SystemUI has its own UID. Allow that signed system sender explicitly,
-            // without exposing wallpaper state changes to ordinary third-party applications.
+            IntentFilter bridge=new IntentFilter(AospSceneLink.ACTION);
+            bridge.addAction(AospSceneLink.ACTION_LAYOUT);
+            // SystemUI holds STATUS_BAR. Require it so ordinary third-party apps
+            // cannot inject scene changes into the wallpaper engine.
             if(android.os.Build.VERSION.SDK_INT>=33){
                 registerReceiver(state,f,Context.RECEIVER_NOT_EXPORTED);
-                registerReceiver(scenes,bridge,ColorOsBridge.SENDER_PERMISSION,null,Context.RECEIVER_EXPORTED);
+                registerReceiver(scenes,bridge,AospSceneLink.SENDER_PERMISSION,null,Context.RECEIVER_EXPORTED);
             }else{
                 registerReceiver(state,f);
-                registerReceiver(scenes,bridge,ColorOsBridge.SENDER_PERMISSION,null);
+                registerReceiver(scenes,bridge,AospSceneLink.SENDER_PERMISSION,null);
             }
             if(!isPreview())try{
                 getContentResolver().registerContentObserver(android.provider.Settings.System.getUriFor("alive_wallpaper_position"),false,area);
