@@ -39,16 +39,27 @@ jobs:
         run: |
           python3 - <<'PY'
           import os,base64,pathlib
-          if not os.environ.get('KEY_DATA'):raise SystemExit('Missing OPENALIVE_KEYSTORE_B64 secret')
+          data=os.environ.get('KEY_DATA')
+          if not data:
+              # Forks do not inherit upstream secrets. build_release.py creates a
+              # local development key when OPENALIVE_KEYSTORE is unset.
+              print('OPENALIVE_KEYSTORE_B64 not set; using local development key')
+              raise SystemExit(0)
           key=pathlib.Path(os.environ['RUNNER_TEMP'])/'openalive.jks'
-          key.write_bytes(base64.b64decode(os.environ['KEY_DATA'],validate=True))
+          key.write_bytes(base64.b64decode(data,validate=True))
           key.chmod(0o600)
           with open(os.environ['GITHUB_ENV'],'a') as f:f.write('OPENALIVE_KEYSTORE='+str(key)+'\n')
           PY
       - name: Compile and verify
         env:
-          OPENALIVE_STORE_PASSWORD: ${{ secrets.OPENALIVE_STORE_PASSWORD }}
-        run: python3 tools/build_release.py
+          SIGNING_PASSWORD: ${{ secrets.OPENALIVE_STORE_PASSWORD }}
+        run: |
+          if [ -n "$SIGNING_PASSWORD" ]; then
+            export OPENALIVE_STORE_PASSWORD="$SIGNING_PASSWORD"
+          else
+            unset OPENALIVE_STORE_PASSWORD
+          fi
+          python3 tools/build_release.py
       - name: Upload build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
