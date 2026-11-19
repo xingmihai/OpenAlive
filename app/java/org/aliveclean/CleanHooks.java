@@ -8,18 +8,15 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 /**
  * LineageOS-only Xposed entry point.
  *
- * Upstream OpenAlive targets ColorOS 17 and drives its scene machine through
- * com.oplus.* reflection. This fork deliberately has a single runtime path:
+ * One runtime path, no platform sniffing:
+ *   com.android.systemui -> AospBridge + ModuleActivationHook
+ *   android              -> AospBridge.installFramework
  *
- *   com.android.systemui -> ModuleActivationHook + AospBridge
- *   android (system_server) -> AospBridge.installFramework
- *
- * The ColorOS bridge, the OPlus wallpapers scope and the OEM permission shim
- * are gone. If this APK somehow lands on a ColorOS build it refuses to load
- * instead of half-working; use upstream Maga-King/OpenAlive there.
- *
- * Rendering, assets, Rust and the wallpaper editor are platform-neutral and
- * are shared verbatim with upstream.
+ * Every step is isolated. A failure in one hook must never abort the rest of
+ * handleLoadPackage: earlier revisions lost the whole SystemUI bridge because
+ * a single unguarded call threw. XposedBridge.log is used in addition to Log
+ * so LSPosed's own "modules" log records the entry point even when logcat's
+ * main buffer is flooded.
  */
 public final class CleanHooks implements IXposedHookLoadPackage {
     private static final String TAG = "AliveClean";
@@ -29,40 +26,50 @@ public final class CleanHooks implements IXposedHookLoadPackage {
         String pkg = p.packageName;
         if (!"android".equals(pkg) && !"com.android.systemui".equals(pkg)) return;
 
-        // Hard platform guard. A LineageOS SystemUI has zero com.oplus.* classes
-        // (verified against the device's 3-dex SystemUI APK); a ColorOS one has
-        // SmoothTransitionController. Do not silently fall back on the OEM ROM.
-        if (XposedHelpers.findClassIfExists(
-                "com.oplus.systemui.aod.display.SmoothTransitionController",
-                p.classLoader) != null) {
-            Log.w(TAG, "LineageOS-only fork: refusing to load on ColorOS (" + pkg + ")");
-            return;
-        }
-
-        Log.i(TAG, "LineageOS build: installing AOSP bridge in " + pkg);
+        XposedBridge.log("AliveClean: handleLoadPackage " + pkg);
+        Log.i(TAG, "LineageOS build: hook entry " + pkg);
 
         if ("com.android.systemui".equals(pkg)) {
-            ModuleActivationHook.install();
-            AospBridge.install(p.classLoader);
+            // Scene bridge FIRST. It must survive even if the activation
+            // receipt hook fails on a given SystemUI build.
+            try {
+                AospBridge.install(p.classLoader);
+            } catch (Throwable error) {
+                XposedBridge.log("AliveClean: AospBridge.install failed: " + error);
+                Log.e(TAG, "AospBridge.install failed", error);
+            }
+            try {
+                ModuleActivationHook.install(p.classLoader);
+            } catch (Throwable error) {
+                XposedBridge.log("AliveClean: activation hook failed: " + error);
+                Log.e(TAG, "ModuleActivationHook.install failed", error);
+            }
         } else {
-            AospBridge.installFramework(p.classLoader);
+            try {
+                AospBridge.installFramework(p.classLoader);
+            } catch (Throwable error) {
+                XposedBridge.log("AliveClean: installFramework failed: " + error);
+                Log.e(TAG, "AospBridge.installFramework failed", error);
+            }
         }
 
         if (!ambientHooked) {
-            XposedHelpers.findAndHookMethod(WallpaperInfo.class, "supportsAmbientMode",
-                    new XC_MethodHook() {
-                        @Override protected void afterHookedMethod(MethodHookParam call) {
-                            WallpaperInfo info = (WallpaperInfo) call.thisObject;
-                            if ("org.aliveclean".equals(info.getPackageName())) {
-                                call.setResult(true);
+            try {
+                XposedHelpers.findAndHookMethod(WallpaperInfo.class, "supportsAmbientMode",
+                        new XC_MethodHook() {
+                            @Override protected void afterHookedMethod(MethodHookParam call) {
+                                WallpaperInfo info = (WallpaperInfo) call.thisObject;
+                                if ("org.aliveclean".equals(info.getPackageName())) {
+                                    call.setResult(true);
+                                }
                             }
-                        }
-                    });
-            ambientHooked = true;
+                        });
+                ambientHooked = true;
+            } catch (Throwable error) {
+                XposedBridge.log("AliveClean: ambient mode hook failed: " + error);
+            }
         }
 
-        if (Diagnostics.TRACE) {
-            XposedBridge.log("AliveClean: LineageOS hooks loaded in " + pkg);
-        }
+        XposedBridge.log("AliveClean: hooks done in " + pkg);
     }
 }

@@ -14,11 +14,21 @@ final class ModuleActivation {
         if(!announcing.compareAndSet(false,true))return;
         new Thread(()->{
             try{
-                Bundle data=new Bundle();data.putBinder("owner",OWNER);
-                context.getContentResolver().call(STATUS,"hookAnnounce",null,data);
+                // The app's ContentProvider may not be instantiated yet when
+                // SystemUI starts at boot. A single call() returning null used
+                // to lose the receipt for the whole session. Retry briefly;
+                // the home screen QUERY and the boot/screen-on receivers can
+                // also trigger a fresh announce at any time.
+                for(int attempt=0;attempt<12;attempt++){
+                    Bundle data=new Bundle();data.putBinder("owner",OWNER);
+                    Bundle reply=context.getContentResolver().call(STATUS,"hookAnnounce",null,data);
+                    if(reply!=null)break;
+                    try{Thread.sleep(500);}catch(InterruptedException interrupted){
+                        Thread.currentThread().interrupt();break;
+                    }
+                }
             }catch(RuntimeException unavailable){
-                // The app may not be allowed to start during boot. The visible
-                // home page requests a fresh receipt; no persisted ready flag.
+                // Provider not reachable; a later QUERY will try again.
             }finally{announcing.set(false);}
         },"OpenAliveModuleReceipt").start();
     }

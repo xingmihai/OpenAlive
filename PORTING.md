@@ -150,3 +150,48 @@ su -c 'unzip -l $(pm path org.aliveclean | cut -d: -f2) | grep -i xposed'
 ```
 
 应输出 `assets/xposed_init`。若无此行，LSPosed 根本不会把它列为模块。
+
+
+---
+
+## 九、LSPosed 诊断包结论：模块已注入，桥接被单点异常截断（06:05 包）
+
+用户导出 `LSPosed_20261120_060522.zip`（108 项，含 `scopes.txt` / `db_scope.txt` / `modules_*.log`）。逐项核对后，**作用域配置完全正确**，之前的「没勾 SystemUI」判断作废：
+
+- `db_modules.txt`：`org.aliveclean` 已注册，APK 路径 `/data/app/~~0hhcbL-bJ_08nHyFe1Dc2A==/org.aliveclean-qYxNiL0cqB2f9Is1OBMBAA==/base.apk`
+- `db_scope.txt` 第 21/22 条：`app_pkg_name=system` 与 `app_pkg_name=com.android.systemui` 都挂了 `org.aliveclean`（user 0）
+- `scopes.txt` 第 338-340 行：
+  ```
+  com.android.systemui/10140
+      org.aliveclean
+          org.aliveclean.CleanHooks
+  ```
+  即 LSPosed 确实把 `CleanHooks` 注入了 SystemUI 主进程
+- `modules_2026-11-20T06:04:26.log` 第 5 行：`(system)[org.aliveclean,XposedBridge,...] AliveClean: AOSP ambient permission adapter on ...checkPermission` → system_server 分支正常
+- 但**两份 modules 日志里 `(com.android.systemui)` 命中 0**，也没有 `AOSP bridge loaded`；`full.log` 里 `AliveClean` / `AOSP` 命中 0
+
+**根因**：旧 `CleanHooks.handleLoadPackage` 把 `ModuleActivationHook.install()` 和 `AospBridge.install()` 串在同一段、**无 try-catch**；`ModuleActivationHook` 又只 hook `Application.attach(Context)`。只要这一步抛异常（找不到方法 / hidden API / 时机不对），后面的 `AospBridge.install()` 就整个不执行。证据链完全自洽：
+
+| 现象 | 解释 |
+|---|---|
+| `LSP 未激活` / `moduleActive=false` | 激活接收器没注册，QUERY 无人应答 |
+| 熄屏没效果 | `AospBridge` 没装，没人发 `mode=0` |
+| 锁屏/桌面有效果 | `CleanWallpaper` 自带可见性渲染，与桥接无关 |
+| `assets/xposed_init` 存在 | 模块身份没问题（用户已用 `unzip -l` 验证） |
+
+**本批修复**
+
+1. `CleanHooks` 删除 `findClassIfExists(SmoothTransitionController)` 平台嗅探（classloader 差异可能误判并直接 return），改为全程 try-catch 隔离：`AospBridge.install()` 先跑，激活钩子失败不影响场景桥接
+2. 关键节点改用 `XposedBridge.log`，LSPosed 自带「日志 / 模块」页与诊断包的 `modules_*.log` 能直接看到 `handleLoadPackage com.android.systemui` / `AOSP bridge loaded` / `activation receiver registered`，不再依赖易被冲掉的 logcat `main` 缓冲区
+3. `ModuleActivationHook` 改 hook 反编译确认存在的 `SystemUIApplicationImpl.onCreate()`，`Application.attach` 仅作兜底；接收器除 `QUERY_MODULE_ACTIVATION` 外还监听 `BOOT_COMPLETED` / `USER_UNLOCKED` / `SCREEN_ON`，每次重新 announce
+4. `ModuleActivation.announce()` 加重试（最多 6 秒）：开机时 App 的 `NativeClockStatusProvider` 常未实例化，`call()` 返回 null 会永久丢回执
+
+重启后 LSPosed 诊断包里应能看到：
+
+```
+( com.android.systemui )[org.aliveclean,XposedBridge,...] AliveClean: handleLoadPackage com.android.systemui
+( com.android.systemui )[org.aliveclean,XposedBridge,...] AliveClean: AOSP bridge loaded
+( com.android.systemui )[org.aliveclean,XposedBridge,...] AliveClean: activation receiver registered
+```
+
+设备信息（来自 `props.txt`）：`ro.product.device=OP6113L1`、`ro.build.version.release=17`、`ro.build.display.id=CP2A.260605.016`、`ro.build.type=userdebug`；LSPosed 跑在 **NyaZygisk v2.5-383 / KernelSU** 上（不是官方 Zygisk Next），`scopes.txt` 里 `com.android.systemui:appclips.screenshot` 等子进程也都在，框架本身工作正常。
