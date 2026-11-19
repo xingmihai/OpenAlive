@@ -109,12 +109,13 @@ python3 tools/build_release.py        # 产物在 dist/
 3. **确认推送结果**
    本次改动已提交到 fork 的 `main`：`app/java/org/aliveclean/` 下新增 3 个类、`CleanHooks.java` 已覆盖，无需手动复制。如需独立分支，从本次 commit 切出即可。
 
-4. **构建出包（已跑通）**
-   fork 不继承上游 Actions Secrets，首次手动触发在 `Load signing key` 直接失败。已提交 `8abb71c`：缺 `OPENALIVE_KEYSTORE_B64` 时跳过该步，由 `tools/build_release.py` 自动生成 `local/development.jks`；编译步骤也不再把空密码注入环境。重跑 run `44599949579` 全绿，`Compile and verify` 通过，产物在 Actions 的 `OpenAlive-arm64-v8a` artifact，APK 为 `OpenAlive-0.4.42-preview-arm64-v8a.apk`。
+4. **构建出包（已跑通，正式签名已配置）**
+   fork 不继承上游 Actions Secrets，首次手动触发在 `Load signing key` 失败；`8abb71c` 让缺 Secret 时回落到本地开发密钥，run `44599949579` 全绿。
 
-   想用原签名覆盖安装，在仓库 Settings → Secrets 补 `OPENALIVE_KEYSTORE_B64` 和 `OPENALIVE_STORE_PASSWORD`，workflow 会自动切回密钥签名。
+   现已把 JKS 密钥写入仓库 Secrets：`OPENALIVE_KEYSTORE_B64`、`OPENALIVE_STORE_PASSWORD`、`OPENALIVE_KEY_ALIAS`（`星觅海`）、`OPENALIVE_KEY_PASS`。workflow 把别名和私钥密码透传给编译步骤，`tools/build_release.py` 在检测到 `OPENALIVE_KEY_PASS` 时补 `--key-pass`。CI 产出的 APK 由这把密钥签名，证书 SHA-256：
+   `C4BD2C4E5C4A1F924C060F3A233ACB5A7DA2C36D29A59ED4A6E2375C06ABC6E1`
 
-   注：`Publish release` 仍会跑 `tools/verify_release.py` 与 `release/expected.json` 的逐字节校验；源码已改动，哈希必然不同，发布会被拦下，但 APK artifact 照常产出。要发 Release 需另开一轮更新清单。
+   `Publish release` 仍会跑 `tools/verify_release.py` 与 `release/expected.json` 的逐字节校验；源码已改动，哈希必然不同，发布会被拦下，但 APK artifact 照常产出。要发 Release 需另开一轮更新清单。
 
 5. **真机验证一次**
    LSPosed 作用域勾 `系统框架(android)` + `系统界面(com.android.systemui)`；`com.oplus.wallpapers` 在 LineageOS 上不存在，不用找。打开 App 选一款不依赖 AOD 的样式（山脉 / 银河），息屏 → 亮屏 → 解锁各一次，把 `adb logcat -s AliveClean` 贴回来。我按日志接阶段 1。

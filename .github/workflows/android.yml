@@ -53,11 +53,19 @@ jobs:
       - name: Compile and verify
         env:
           SIGNING_PASSWORD: ${{ secrets.OPENALIVE_STORE_PASSWORD }}
+          SIGNING_ALIAS: ${{ secrets.OPENALIVE_KEY_ALIAS }}
+          SIGNING_KEY_PASS: ${{ secrets.OPENALIVE_KEY_PASS }}
         run: |
           if [ -n "$SIGNING_PASSWORD" ]; then
             export OPENALIVE_STORE_PASSWORD="$SIGNING_PASSWORD"
           else
             unset OPENALIVE_STORE_PASSWORD
+          fi
+          if [ -n "$SIGNING_ALIAS" ]; then
+            export OPENALIVE_KEY_ALIAS="$SIGNING_ALIAS"
+          fi
+          if [ -n "$SIGNING_KEY_PASS" ]; then
+            export OPENALIVE_KEY_PASS="$SIGNING_KEY_PASS"
           fi
           python3 tools/build_release.py
       - name: Upload build

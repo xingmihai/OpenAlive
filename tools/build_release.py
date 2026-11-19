@@ -117,8 +117,9 @@ if not key.exists():
     key.parent.mkdir(parents=True,exist_ok=True)
     run(JAVA/('keytool'+EXE),'-genkeypair','-keystore',key,'-storepass:env','OPENALIVE_STORE_PASSWORD','-keypass:env','OPENALIVE_STORE_PASSWORD',
         '-alias',alias,'-keyalg','RSA','-keysize','3072','-validity','10000','-dname','CN=OpenAlive Development',env=env)
+key_pass=['--key-pass','env:OPENALIVE_KEY_PASS'] if 'OPENALIVE_KEY_PASS' in env else []
 run(JAVA/('java'+EXE),'-jar',BT/'lib/apksigner.jar','sign','--alignment-preserved','true','--ks',key,
-    '--ks-pass','env:OPENALIVE_STORE_PASSWORD','--ks-key-alias',alias,'--out',apk,OUT/'aligned.apk',env=env)
+    '--ks-pass','env:OPENALIVE_STORE_PASSWORD','--ks-key-alias',alias,*key_pass,'--out',apk,OUT/'aligned.apk',env=env)
 run(JAVA/('java'+EXE),'-jar',BT/'lib/apksigner.jar','verify','--verbose','--print-certs',apk)
 run(BT/('zipalign'+EXE),'-c','-p',RESOURCE_ALIGNMENT,apk)
 report={'version':version,'apk':apk.name,'sha256':sha(apk),'bytes':apk.stat().st_size,'resource_tables':verify_apk(apk),
