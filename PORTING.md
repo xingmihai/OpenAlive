@@ -119,3 +119,34 @@ LineageOS AOD: no OEM provider; moduleActive=true
 ## 七、构建
 
 签名由 4 个仓库 Secrets 注入，缺失时回落本地开发密钥。`Publish release` 会用 `release/expected.json` 做逐字节校验；源码已改动，哈希必然不同，发布会被拦下，但 APK artifact 照常产出。要发 Release 需重算清单。详见 [BUILD.md](BUILD.md)。
+
+
+---
+
+## 八、`LSP 未激活` 的判定边界（05:55 复测）
+
+现象：首页 `LSP 未激活`，`moduleActive=false`，熄屏无效果，但锁屏与桌面有壁纸效果。
+
+**这个组合是自洽的，不是壁纸引擎坏了**：锁屏/桌面的显示来自 `CleanWallpaper` 自身的可见性回调（`onVisibilityChanged` / Display state），平台照常渲染动态壁纸；而息屏 AOD 需要 `AospBridge` 在 SystemUI 里发 `mode=0`，模块没注入就没有这个信号。所以「锁屏/桌面有、AOD 没有」恰好等价于「SystemUI 未被注入」。
+
+代码侧已逐项排除：
+
+- `assets/xposed_init` = `org.aliveclean.CleanHooks`，构建脚本用 `aapt2 -A app/assets` 打包且组装时不过滤；现已加断言，缺了直接让 CI 失败
+- `AndroidManifest.xml` 有 `xposedmodule=true` / `xposedminversion=82` / `xposedscope=@array/xposed_scope`
+- `CleanHooks` 在 `com.android.systemui` 分支**无条件**调用 `ModuleActivationHook.install()` 与 `AospBridge.install()`；平台保护只在检测到 ColorOS 时拒绝，真机反编译确认 oplus 类计数 0
+- `ModuleActivation.request()` 会向 SystemUI 发 `QUERY_MODULE_ACTIVATION` 并轮询 800ms；两次实时日志都返回 false，说明**那边没有接收器**
+
+因此问题只在 LSPosed 管理器层。按优先级排查：
+
+1. **模块开关**：管理器 → 模块 → OpenAlive，开关必须打开。换正式签名后 LSPosed 会当新 APK，旧开关/作用域记录失效
+2. **作用域必须勾两项**：`系统框架(android)` **和** `系统界面 / SystemUI(com.android.systemui)`。只勾前者时 `installFramework` 会跑但**不写激活回执**（回执只由 SystemUI 侧 `ModuleActivationHook` 写），首页照样显示未激活——这与当前现象完全吻合
+3. **整机重启**：Zygisk 只在进程启动时注入，SystemUI 是常驻进程，不重启不会重新加载
+4. **管理器日志页**：LSPosed 自带的「日志」会显示模块加载成功/失败（如 `ClassNotFoundException`），比 logcat 按 tag 过滤更直接
+
+手机 root 终端里验证 APK 是否具备模块身份：
+
+```sh
+su -c 'unzip -l $(pm path org.aliveclean | cut -d: -f2) | grep -i xposed'
+```
+
+应输出 `assets/xposed_init`。若无此行，LSPosed 根本不会把它列为模块。

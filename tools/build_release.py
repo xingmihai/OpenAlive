@@ -126,6 +126,12 @@ report={'version':version,'apk':apk.name,'sha256':sha(apk),'bytes':apk.stat().st
         'executables':{'classes.dex':sha(OUT/'dex/classes.dex'),'classes2.dex':sha(VENDOR/'editor-ui.dex'),'libalive_clean.so':sha(native)}}
 report['executables'].update({p.name:sha(p) for p in ort_native})
 with zipfile.ZipFile(apk) as z:
+    # LSPosed discovers a module by assets/xposed_init. If aapt2 ever drops
+    # it, the manager will never list this APK and the home indicator stays
+    # 'LSP 未激活' no matter how the scope is configured. Fail the build.
+    names=z.namelist()
+    assert 'assets/xposed_init' in names, 'xposed_init missing from APK'
+    assert z.read('assets/xposed_init').decode('utf8').strip()=='org.aliveclean.CleanHooks'
     assert z.read('lib/arm64-v8a/libalive_clean.so')==native.read_bytes()
     assert z.read('classes2.dex')==(VENDOR/'editor-ui.dex').read_bytes()
     for library in ort_native:assert z.read('lib/arm64-v8a/'+library.name)==library.read_bytes()
