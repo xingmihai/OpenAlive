@@ -37,9 +37,16 @@ public final class CleanWallpaper extends WallpaperService {
             if(Intent.ACTION_CONFIGURATION_CHANGED.equals(action))readWallpaperDim();
             if(!isPreview()){
                 long now=android.os.SystemClock.uptimeMillis();
-                if(Intent.ACTION_SCREEN_OFF.equals(action))scene(0,true,now,1,0,Float.NaN,Float.NaN);
-                else if(Intent.ACTION_SCREEN_ON.equals(action))scene(1,true,now,2,0,Float.NaN,Float.NaN);
-                else if(Intent.ACTION_USER_PRESENT.equals(action))scene(2,true,now,3,0,Float.NaN,Float.NaN);
+                int target=-1,eventPhase=0;
+                if(Intent.ACTION_SCREEN_OFF.equals(action)||Intent.ACTION_DREAMING_STARTED.equals(action)){target=0;eventPhase=1;}
+                else if(Intent.ACTION_SCREEN_ON.equals(action)||Intent.ACTION_DREAMING_STOPPED.equals(action)){target=1;eventPhase=2;}
+                else if(Intent.ACTION_USER_PRESENT.equals(action)){target=2;eventPhase=3;}
+                if(target>=0){
+                    // Unconditional: Diagnostics.TRACE=false in production,
+                    // so gating this behind it made every diagnostic dump blind.
+                    android.util.Log.i("AliveClean","Screen event="+action+" -> mode "+target+" phase="+eventPhase);
+                    scene(target,true,now,eventPhase,0,Float.NaN,Float.NaN);
+                }
             }
             update();refreshVisibility();
         }};
@@ -66,6 +73,12 @@ public final class CleanWallpaper extends WallpaperService {
             if(!isPreview())SceneChannel.add(this);
             IntentFilter f=new IntentFilter();f.addAction(Intent.ACTION_SCREEN_ON);f.addAction(Intent.ACTION_SCREEN_OFF);f.addAction(Intent.ACTION_USER_PRESENT);
             f.addAction(Intent.ACTION_CONFIGURATION_CHANGED);
+            // This device's DozeService keeps the display at STATE_ON with a
+            // doze brightness policy, so the STATE_DOZE fallback in
+            // refreshVisibility() never fires. Dreaming broadcasts are the
+            // reliable doze entry/exit signal across AOSP variants.
+            f.addAction(Intent.ACTION_DREAMING_STARTED);
+            f.addAction(Intent.ACTION_DREAMING_STOPPED);
             IntentFilter bridge=new IntentFilter(AospSceneLink.ACTION);
             bridge.addAction(AospSceneLink.ACTION_LAYOUT);
             // SystemUI holds STATUS_BAR. Require it so ordinary third-party apps
@@ -81,14 +94,15 @@ public final class CleanWallpaper extends WallpaperService {
                 getContentResolver().registerContentObserver(android.provider.Settings.System.getUriFor("alive_wallpaper_position"),false,area);
                 regionObserverRegistered=true;
             }catch(RuntimeException error){android.util.Log.w("AliveClean","AOD region observer unavailable",error);}
-            setTouchEventsEnabled(true);{if(Diagnostics.TRACE)android.util.Log.i("AliveClean","Wallpaper engine created preview="+isPreview());}
+            setTouchEventsEnabled(true);
+            android.util.Log.i("AliveClean","Wallpaper engine created preview="+isPreview());
         }
         @Override public void scene(int next,boolean animate,long time,int phase,long clockToken,float nightLevel,float aodMask){
             boolean changed=scenesState.accept(next,time,phase);
             if(changed){ambient=next==0;renderer.mode(next,animate,nightLevel,aodMask);}
             refreshVisibility();
             if(scenesState.mode()==next&&engineDisplayId()==android.view.Display.DEFAULT_DISPLAY)renderer.clockTransition(clockToken);
-            {if(Diagnostics.TRACE)android.util.Log.i("AliveClean","Scene mode="+next+" changed="+changed+" animate="+animate+" phase="+phase+" delayMs="+(android.os.SystemClock.uptimeMillis()-time));}
+            android.util.Log.i("AliveClean","Scene mode="+next+" changed="+changed+" animate="+animate+" phase="+phase+" delayMs="+(android.os.SystemClock.uptimeMillis()-time));
         }
         @Override public void region(AodRegion region){
             int display=engineDisplayId();

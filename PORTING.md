@@ -233,3 +233,38 @@ su -c 'unzip -l $(pm path org.aliveclean | cut -d: -f2) | grep -i xposed'
 1. 直接打开 App 选「山脉」或「银河」应用壁纸 —— 无需重启、无需 LSPosed，桌面/锁屏立即生效
 2. 息屏 → 亮屏 → 解锁，用 `su -c 'logcat -v threadtime AliveClean:I *:S'` 观察 `Scene mode=0/1/2`（需 `Diagnostics.TRACE`；不打开也能从画面判断）
 3. LSPosed 首页 `LSP 未激活` 可以忽略，不要再为它反复装包或重启
+
+
+---
+
+## 十一、06:47 诊断包：基础设施全绿，补齐可观测性与 doze 兜底
+
+用户装 `44630282566`（`8fb16eaf`）并重启后导出 `LSPosed_20261120_064717.zip`（116 项）。结论：**上一批的架构修正已生效，但日志看不见场景切换**。
+
+| 证据 | 内容 |
+|---|---|
+| `modules_2026-11-20T06:45:37.log:5` | `(system)[org.aliveclean,...] AliveClean: framework scope unused on LineageOS` —— 这是 `8fb16eaf` 新增的标记，**确认新包已装**；framework 分支按设计 no-op |
+| 同一份日志 | `(com.android.systemui)` 仍命中 0 —— 与前三轮一致，LSPosed 注入不了 SystemUI，现已无关紧要 |
+| `verbose` | 无 `Failed to open APK` / `PackageParserException`，缓存路径正常 |
+| `full.log:17925-17959`、`19480-19508` | 两次 `setWallpaperComponent(ComponentInfo{org.aliveclean/org.aliveclean.CleanWallpaper})` → `onServiceConnected` → `connectLocked` → `setClientSurface`，**没有任何 `SecurityException` / `Failure setting wallpaper`**。`supportsAmbientMode=false` 生效 |
+| `full.log:22665 / 29382 / 30531` | `WallpaperService: onVisibilityChanged(false/true/false): org.aliveclean.CleanWallpaper$SceneEngine@8cd91d9` —— 壁纸引擎确实在跑；`ImageWallpaper` 只剩 2 处（启动期残留） |
+| `full.log:20482-20707` | 06:46:26 `DreamController: Starting dream: DozeService, canDoze=true` → `policy=DOZE`、`DozeBrightnessStrategy`；06:46:28 `onStartedWakingUp` → `Stopping dream`。**息屏→亮屏流程真实发生过** |
+| `full.log` 全文 | `AliveClean` / `Scene mode` 命中 **0** |
+
+**为什么看不到 mode 切换**：`Diagnostics.TRACE=false`（生产构建），而 `CleanWallpaper` 里 `Wallpaper engine created`、`Scene mode=…` 两行都被 `if(Diagnostics.TRACE)` 包着；`RootBridge.prepareAod` 的无条件日志又只走 App 内「应用壁纸」，这次是从系统 `LiveWallpaperPreview` 设的。所以日志静默**不代表状态机没跑**，只是没有观测点。
+
+**另一个真实缺口**：本机 `DreamService[DozeService]: UpdateDoze mDozeScreenState=2`，即 AOD 期间 Display 保持在 `STATE_ON`（2）配 doze 亮度策略，而不是 `STATE_DOZE`（3）。上一批在 `refreshVisibility()` 加的 `STATE_DOZE` 兜底在这台机上**永远不会触发**，mode 0 只能靠 `ACTION_SCREEN_OFF` 广播；若壁纸进程被冻结导致广播延迟，仍有漏切风险。
+
+**本批修正（不改变已验证的渲染行为）**
+
+1. `state` receiver 增听 `ACTION_DREAMING_STARTED` / `ACTION_DREAMING_STOPPED`（AOSP `PowerManagerService.Notifier` 在 dozing 起止时发，跨 ROM 比 Display state 可靠），分别补 `scene(0, phase=1)` / `scene(1, phase=2)`；与屏幕广播同 mode 时 `SceneState.accept` 返回 `changed=false`，不会重复切
+2. 三条关键日志改为**无条件**输出：`Wallpaper engine created preview=…`、`Screen event=<action> -> mode N phase=P`、`Scene mode=N changed=…`。`Diagnostics` 类保留但 `CleanWallpaper` 不再引用它
+3. 不动 `wallpaper.xml`、`CleanHooks`、`SceneState`、`AospSceneLink`、`RenderLoop` —— 上一批的链路已被这份包证明可用
+
+**验证方式**（装本批包后，无需重启、无需 LSPosed）：
+
+```sh
+su -c 'logcat -v threadtime AliveClean:I *:S'
+```
+
+息屏 → 亮屏 → 解锁，应看到 mode `0 → 1 → 2` 各一条 `changed=true`。若 `Screen event=...SCREEN_OFF` 出现但 `Scene mode=0 changed=false`，说明 `SceneState` 相位被前序事件卡住，把三行贴回来即可定位；若连 `Wallpaper engine created` 都没有，才是壁纸服务没被绑定。

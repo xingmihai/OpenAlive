@@ -31,19 +31,22 @@
 4. 打开 App 选「山脉」或「银河」应用壁纸；桌面、锁屏立即生效，息屏→亮屏→解锁会切 mode 0/1/2
 5. 选「山脉」或「银河」应用壁纸，然后息屏 → 亮屏 → 解锁
 
-抓日志（推荐，绕过任何日志 App 的权限与过滤限制）：
+抓日志（推荐，绕过任何日志 App 的权限与过滤限制）。场景状态机现在无条件输出，不再需要打开 TRACE：
 
 ```sh
 su -c 'logcat -v threadtime AliveClean:I *:S'
 ```
 
-期望看到：
+期望看到（息屏 → 亮屏 → 解锁）：
 
 ```
-LineageOS build: installing AOSP bridge in com.android.systemui
-AOSP bridge loaded
-AOSP wakefulness: binderStub=true sleepHooks=1 wakeHooks=1
-AOSP scene mode=0/1/2 ...
+AliveClean: Wallpaper engine created preview=false
+AliveClean: Screen event=android.intent.action.SCREEN_OFF -> mode 0 phase=1
+AliveClean: Scene mode=0 changed=true ...
+AliveClean: Screen event=android.intent.action.SCREEN_ON -> mode 1 phase=2
+AliveClean: Scene mode=1 changed=true ...
+AliveClean: Screen event=android.intent.action.USER_PRESENT -> mode 2 phase=3
+AliveClean: Scene mode=2 changed=true ...
 ```
 
 `org.aliveclean` 进程里的 `hiddenapi: BackgroundBlurDrawable`、`Invalid resource ID 0x00000000` 来自 `vendor/flyme/editor-ui.dex`（魅族官方预编译 UI），LineageOS 不放行这些隐藏 API，只影响背景模糊，不影响壁纸与场景切换。
