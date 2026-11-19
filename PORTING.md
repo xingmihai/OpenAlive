@@ -140,3 +140,44 @@ su -c 'logcat -d -s AliveClean'      # 手机 root 终端
    Logcat Reader 过滤填法：**「Tag标记」填 `AliveClean`**，信息 / 包名 / PID / TID / 时间范围全部留空，七个级别按钮全点，「排除」不要勾。包名不能填 `org.aliveclean`——日志产生在 `com.android.systemui` 和 `system_server` 进程，填了反而漏掉桥接层。等价的 adb 命令是 `adb logcat -s AliveClean`。
 
    诊断日志会直接打印这台机器上命中的 AOSP 类名（`AOSP application=`、`AOSP mediator=`、`AOSP framework=`）以及每次 `AOSP scene mode=`，所以不再需要单独 pull `SystemUI.apk` 反编译。LSPosed 管理器自带的「日志」页可交叉核对 XposedBridge.log。
+
+
+## 六、真机 SystemUI 反编译核对（系统界面_17.apk，44 MB / 3 个 dex）
+
+用户提供 `系统界面_17.apk`（实际为 ZIP，扩展名被加了 `.txt`）。直接解析 3 个 dex 的 string_ids / type_ids / method_ids / proto_ids，共 140803 条唯一字符串。
+
+**平台判定**：`Lcom/oplus/...` 类计数 **0**，`com.oplus.systemui.aod.display.SmoothTransitionController`、`AodData`、`OplusKeyguardViewMediatorExImpl`、`com.android.systemui.DependencyEx` 全部 MISSING → 确认纯 AOSP，`Platform.colorOsSystemUi` 必定返回 false，走 `AospBridge`。
+
+**类命中（描述符形式，全部 FOUND）**
+
+| 用途 | 类 |
+|---|---|
+| SystemUI 入口 | `com.android.systemui.application.impl.SystemUIApplicationImpl` |
+| 息屏/唤醒 | `com.android.systemui.keyguard.KeyguardService$2` |
+| 锁屏状态 | `com.android.systemui.keyguard.KeyguardViewMediator` |
+| 解锁 | `com.android.keyguard.KeyguardUpdateMonitor` |
+| 生物解锁 | `com.android.systemui.statusbar.phone.BiometricUnlockController` |
+| 解锁动画 | `com.android.systemui.keyguard.KeyguardUnlockAnimationController` |
+
+另两个候选 `application.SystemUIApplication`、`SystemUIApplication`（旧包）、`KeyguardViewMediatorImpl` 均 MISSING，第一候选即正确。
+
+**方法签名（method_ids + proto_ids 精确解析）**
+
+```
+SystemUIApplicationImpl.onCreate()                                    -> V
+KeyguardService$2.onStartedGoingToSleep(I)                            -> V
+KeyguardService$2.onStartedWakingUp(I, Z)                             -> V
+KeyguardService$2.onScreenTurnedOff() / onScreenTurningOn(...)        -> V
+KeyguardUpdateMonitor.setKeyguardGoingAway(Z)                         -> V
+BiometricUnlockController.startWakeAndUnlock(I, BiometricUnlockSource)-> V
+BiometricUnlockController.startWakeAndUnlock(BiometricSourceType, Z)  -> V
+KeyguardUnlockAnimationController.notifyStartSurfaceBehindRemoteAnimation(
+        [AnimatedSurface, [AnimatedSurface, [AnimatedSurface, J, Z)    -> V
+KeyguardViewMediator.keyguardGone() 实际在 KeyguardViewMediator$5
+```
+
+**修正**：原先 `AospBridge.installPowerEvents` 把 `onStartedGoingToSleep(int)` / `onStartedWakingUp(int)` / `keyguardGone()` 挂在 `KeyguardViewMediator` 上——这台机器上三个方法都不存在，`findAndHookMethod` 会静默抛异常被 `failure()` 吞掉，息屏/亮屏只剩广播兜底。现改为优先 hook `KeyguardService$2`，用 `hookAllMethods` 兼容 `(I)` 与 `(I,Z)` 签名；`keyguardGone` 改挂 `KeyguardViewMediator$5`；保留旧候选做跨分支兼容。同时 `AospSceneLink.dispatch` 加 250 ms 同 mode 去重，避免 binder stub + 广播重复触发。
+
+`KeyguardViewMediator` 上仍存在的可用方法：`setShowingLocked(Z, String, Z)`、`handleHide()`、`handleKeyguardDone()`、`cancelKeyguardExitAnimation()`、`finishSurfaceBehindRemoteAnimation(Z)`、`startKeyguardExitAnimation(SurfaceTransition$Params)`——阶段 2 做解锁动画对齐时用这些。
+
+framework 侧（`services.jar` / `framework.jar`）不在此 APK 内，`AospBridge.installFramework` 仍靠运行时日志打印 `AOSP framework=...` 确认。若 Binder 连接报 `AMBIENT_WALLPAPER` 权限拒绝，把 APK 作为 priv-app 安装即可。

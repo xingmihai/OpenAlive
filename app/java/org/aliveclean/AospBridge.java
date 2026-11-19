@@ -72,47 +72,66 @@ final class AospBridge {
         }
     }
 
+    /**
+     * Wakefulness owners verified against the device's SystemUI APK (3 dex,
+     * 140803 unique strings). On this LineageOS build KeyguardViewMediator has
+     * NO onStartedGoingToSleep / onStartedWakingUp / keyguardGone methods:
+     * they live in KeyguardService$2 (the IKeyguardService binder stub) and
+     * KeyguardViewMediator$5. hookAllMethods is used because the binder stub's
+     * signatures are (I) and (I, Z), not the legacy (int) ones.
+     */
     private static void installPowerEvents(ClassLoader cl) {
-        Class<?> mediator = firstExisting(cl,
+        String[] owners = {
+                "com.android.systemui.keyguard.KeyguardService$2",
                 "com.android.systemui.keyguard.KeyguardViewMediator",
-                "com.android.systemui.keyguard.KeyguardViewMediatorImpl");
-        Log.i(TAG, "AOSP mediator=" + (mediator == null ? "missing" : mediator.getName()));
-        if (mediator == null) {
-            failure("KeyguardViewMediator", new ClassNotFoundException("sleep/wake owner missing"));
-            return;
-        }
-        try {
-            XposedHelpers.findAndHookMethod(mediator, "onStartedGoingToSleep", int.class,
-                    new XC_MethodHook() {
-                        @Override protected void afterHookedMethod(MethodHookParam p) {
-                            if (!p.hasThrowable()) {
-                                AospSceneLink.dispatch(0, true, 1, "AOD");
+                "com.android.systemui.keyguard.KeyguardViewMediatorImpl",
+        };
+        int sleepHooks = 0, wakeHooks = 0;
+        for (String name : owners) {
+            Class<?> owner = XposedHelpers.findClassIfExists(name, cl);
+            if (owner == null) continue;
+            try {
+                if (!XposedBridge.hookAllMethods(owner, "onStartedGoingToSleep",
+                        new XC_MethodHook() {
+                            @Override protected void afterHookedMethod(MethodHookParam p) {
+                                if (!p.hasThrowable()) AospSceneLink.dispatch(0, true, 1, "AOD");
                             }
-                        }
-                    });
-        } catch (Throwable error) {
-            failure("onStartedGoingToSleep", error);
+                        }).isEmpty()) sleepHooks++;
+            } catch (Throwable error) {
+                failure("onStartedGoingToSleep@" + name, error);
+            }
+            try {
+                if (!XposedBridge.hookAllMethods(owner, "onStartedWakingUp",
+                        new XC_MethodHook() {
+                            @Override protected void beforeHookedMethod(MethodHookParam p) {
+                                AospSceneLink.dispatch(1, true, 2, "KEYGUARD");
+                            }
+                        }).isEmpty()) wakeHooks++;
+            } catch (Throwable error) {
+                failure("onStartedWakingUp@" + name, error);
+            }
         }
-        try {
-            XposedHelpers.findAndHookMethod(mediator, "onStartedWakingUp", int.class,
-                    new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam p) {
-                            AospSceneLink.dispatch(1, true, 2, "KEYGUARD");
-                        }
-                    });
-        } catch (Throwable error) {
-            failure("onStartedWakingUp", error);
+        Log.i(TAG, "AOSP wakefulness: binderStub="
+                + (XposedHelpers.findClassIfExists(owners[0], cl) != null)
+                + " sleepHooks=" + sleepHooks + " wakeHooks=" + wakeHooks);
+        if (sleepHooks == 0 && wakeHooks == 0) {
+            failure("wakefulness", new ClassNotFoundException(
+                    "no sleep/wake owner; ACTION_SCREEN_OFF/ON fallback remains"));
         }
-        try {
-            XposedHelpers.findAndHookMethod(mediator, "keyguardGone", new XC_MethodHook() {
-                @Override protected void afterHookedMethod(MethodHookParam p) {
-                    if (!p.hasThrowable()) {
-                        AospSceneLink.dispatch(2, true, 3, "UNLOCK");
+        // keyguardGone is a KeyguardViewMediator$5 callback on this build only.
+        // Unlock is already covered by setKeyguardGoingAway, startWakeAndUnlock
+        // and notifyStartSurfaceBehindRemoteAnimation, so keep this tolerant.
+        Class<?> gone = firstExisting(cl,
+                "com.android.systemui.keyguard.KeyguardViewMediator$5",
+                "com.android.systemui.keyguard.KeyguardViewMediator");
+        if (gone != null) {
+            try {
+                XposedBridge.hookAllMethods(gone, "keyguardGone", new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam p) {
+                        if (!p.hasThrowable()) AospSceneLink.dispatch(2, true, 3, "UNLOCK");
                     }
-                }
-            });
-        } catch (Throwable ignored) {
-            // Not present on every branch; the other unlock signals cover it.
+                });
+            } catch (Throwable ignored) {}
         }
     }
 

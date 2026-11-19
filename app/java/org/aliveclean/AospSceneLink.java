@@ -50,6 +50,8 @@ final class AospSceneLink {
     private static volatile boolean connecting;
     private static volatile Context context;
     private static volatile int lastMode = -1;
+    private static volatile int lastDispatchMode = -1;
+    private static volatile long lastDispatchUptime;
     private static Handler worker;
 
     private static final Messenger clockFeedback = new Messenger(new Handler(
@@ -105,6 +107,11 @@ final class AospSceneLink {
     static void dispatch(int mode, boolean animate, int phase, String state) {
         long time = SystemClock.uptimeMillis();
         main.post(() -> {
+            // Multiple wakefulness owners can fire for one transition (binder
+            // stub + legacy mediator + broadcast). Collapse identical modes.
+            if (mode == lastDispatchMode && time - lastDispatchUptime < 250) return;
+            lastDispatchMode = mode;
+            lastDispatchUptime = time;
             Log.i(TAG, "AOSP scene mode=" + mode + " phase=" + phase
                     + " state=" + state + " selected=" + selected);
             if (!selected) return;
