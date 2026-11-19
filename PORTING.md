@@ -86,6 +86,23 @@ python3 tools/build_release.py        # 产物在 dist/
 
 推 `v*` 标签可由 GitHub Actions 完成同一套编译并产出 APK。`vendor/flyme/editor-ui.dex` 是预编译 DEX，不参与源码编译。
 
+## 五·补、真机日志诊断（2026-11-20）
+
+第一轮 logcat 只出现 `org.aliveclean` 自己进程的行（同一个 UID / PID），原因通常是 Logcat Reader 的「包名」里填了 `org.aliveclean`，而桥接层跑在 `com.android.systemui` 和 `system_server`，会被这个条件整个滤掉。**过滤页只填「Tag标记」=`AliveClean`，包名一栏必须空着。**
+
+已观察到的三类输出：
+
+- `E/AliveClean AOD setup failed` → `RootBridge.prepareAod` 第 35 行硬查 `com.oplus.aod.AodMachineHelperProvider`。这是 App 层的 ColorOS 门槛，壁纸此时其实已经 `commitDraft()` 保存成功，只是弹了个「息屏配置未完成」框。现已改为：检测不到 provider 时走 AOSP 分支直接返回，并打印 `AOSP AOD: no oplus provider; moduleActive=true/false`。
+- `moduleActive` 来自 `ModuleActivation.active()`，读的是 SystemUI 侧 `ModuleActivationHook` 写下的回执，与平台无关。`false` 说明 LSPosed 没把模块注入 SystemUI（作用域没勾 / 没重启 / 模块未启用）；`true` 说明桥接层已加载，之前只是日志被过滤掉。首页的「LSP 检测中 / 已激活」指示灯可交叉核对。
+- `hiddenapi: ... BackgroundBlurDrawable ... from classes2.dex`、`Invalid resource ID 0x00000000`：来自 `vendor/flyme/editor-ui.dex`（魅族官方 UI 预编译 DEX），LineageOS 不放行这些隐藏 API，结果是背景模糊与个别资源失效，**不影响壁纸渲染和场景切换**。`Using generational CollectorTypeCMC GC`、`Unsupported class loader` 是 ART 正常噪声。
+
+需要完整诊断时，最省事的是绕开 Logcat Reader：
+
+```sh
+adb logcat -d -s AliveClean          # 电脑
+su -c 'logcat -d -s AliveClean'      # 手机 root 终端
+```
+
 ## 五、需要你做的
 
 1. **设备信息**

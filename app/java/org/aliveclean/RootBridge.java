@@ -31,8 +31,17 @@ final class RootBridge {
     }
 
     static String prepareAod(Context context)throws Exception {
-        if(android.os.Process.myUid()/100000!=0)throw new IOException("目前仅支持主用户的 ColorOS 息屏配置");
-        if(context.getPackageManager().resolveContentProvider("com.oplus.aod.AodMachineHelperProvider",0)==null)throw new IOException("此系统未提供已适配的 ColorOS 息屏接口，请在系统设置中配置");
+        if(android.os.Process.myUid()/100000!=0)throw new IOException("目前仅支持主用户的息屏配置");
+        if(context.getPackageManager().resolveContentProvider("com.oplus.aod.AodMachineHelperProvider",0)==null){
+            // LineageOS / AOSP has no OPlus AOD provider. Scene transitions are
+            // driven by AospBridge inside SystemUI, so there is nothing to set up
+            // through root here. Log the module receipt from the app process too:
+            // users often filter logcat by package name and would otherwise never
+            // see the SystemUI-side diagnostic lines.
+            boolean active=ModuleActivation.active(context);
+            android.util.Log.i("AliveClean","AOSP AOD: no oplus provider; moduleActive="+active);
+            return "壁纸已应用，AOSP 场景切换由系统界面桥接接管";
+        }
         String apk=context.getApplicationInfo().sourceDir;
         String command="CLASSPATH="+quote(apk)+" /system/bin/app_process /system/bin org.aliveclean.PlatformApply panoramic-aod";
         Process process;
