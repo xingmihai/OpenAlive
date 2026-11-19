@@ -19,7 +19,7 @@ android (system_server)
   └─ WallpaperInfo.supportsAmbientMode → 对本包返回 true
 ```
 
-`AospSceneLink` 持有全部协议常量（`ACTION` = `org.aliveclean.SCENE`、`ACTION_LAYOUT` = `org.aliveclean.AOD_LAYOUT`、`SENDER_PERMISSION` = `android.permission.STATUS_BAR`）；`CleanWallpaper` 直接引用它们，运行时不再加载任何 ColorOS 类。
+`AospSceneLink` 持有全部协议常量（`ACTION` = `org.aliveclean.SCENE`、`ACTION_LAYOUT` = `org.aliveclean.AOD_LAYOUT`、`SENDER_PERMISSION` = `android.permission.STATUS_BAR`）；`CleanWallpaper` 直接引用它们，运行时不再加载任何 ColorOS 类。壁纸暗色判定改用 AOSP `uiMode` 夜间标志，OEM 的 `oplus_customize_settings_dark_wallpaper` Secure 设置与其 ContentObserver 已移除。
 
 作用域：`android` + `com.android.systemui`（`@array/xposed_scope`）。`com.oplus.wallpapers` 已从作用域和 `<queries>` 中移除。
 

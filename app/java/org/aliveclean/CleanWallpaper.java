@@ -15,10 +15,6 @@ public final class CleanWallpaper extends WallpaperService {
         boolean regionObserverRegistered,receivedLayout;
         boolean wallpaperVisible,renderVisible;
         int lastDisplayState=android.view.Display.STATE_UNKNOWN;
-        boolean dimObserverRegistered;
-        final android.database.ContentObserver dimSetting=new android.database.ContentObserver(new android.os.Handler(android.os.Looper.getMainLooper())){
-            @Override public void onChange(boolean selfChange){readWallpaperDim();}
-        };
         android.hardware.display.DisplayManager displayManager;
         final android.hardware.display.DisplayManager.DisplayListener displays=new android.hardware.display.DisplayManager.DisplayListener(){
             public void onDisplayAdded(int id){refreshVisibility();}
@@ -44,8 +40,8 @@ public final class CleanWallpaper extends WallpaperService {
         @Override public void onCreate(SurfaceHolder holder){
             super.onCreate(holder);renderer=new RenderLoop(CleanWallpaper.this,isPreview()?SceneOptions.DRAFT:SceneOptions.APPLIED);
             readWallpaperDim();
-            try{getContentResolver().registerContentObserver(android.provider.Settings.Secure.getUriFor("oplus_customize_settings_dark_wallpaper"),false,dimSetting);dimObserverRegistered=true;}
-            catch(RuntimeException error){android.util.Log.w("AliveClean","Wallpaper dim observer unavailable",error);}
+            // AOSP night mode is delivered through ACTION_CONFIGURATION_CHANGED,
+            // already handled by the state receiver above. No OEM Secure setting.
             renderer.visible(false);
             displayManager=getSystemService(android.hardware.display.DisplayManager.class);
             displayManager.registerDisplayListener(displays,new android.os.Handler(android.os.Looper.getMainLooper()));
@@ -101,10 +97,9 @@ public final class CleanWallpaper extends WallpaperService {
         private void update(){KeyguardManager k=getSystemService(KeyguardManager.class);renderer.mode(isPreview()?1:scenesState.fallback(ambient,k.isKeyguardLocked()));}
         private void readWallpaperDim(){
             boolean night=(getResources().getConfiguration().uiMode&android.content.res.Configuration.UI_MODE_NIGHT_MASK)==android.content.res.Configuration.UI_MODE_NIGHT_YES;
-            boolean dim=false;
-            try{dim=night&&android.provider.Settings.Secure.getInt(getContentResolver(),"oplus_customize_settings_dark_wallpaper",0)==1;}
-            catch(RuntimeException error){android.util.Log.w("AliveClean","Wallpaper dim setting unavailable",error);}
-            renderer.vivoDarkWallpaper(dim);
+            // LineageOS has no OEM dark-wallpaper Secure setting; the
+            // platform night-mode flag is the single source of truth here.
+            renderer.vivoDarkWallpaper(night);
         }
         @Override public void onSurfaceChanged(SurfaceHolder h,int format,int w,int height){super.onSurfaceChanged(h,format,w,height);{if(Diagnostics.TRACE)android.util.Log.i("AliveClean","Surface changed "+w+"x"+height);}update();renderer.attach(h.getSurface(),w,height);readOfficialRegion();}
         private void refreshVisibility(){
@@ -133,6 +128,6 @@ public final class CleanWallpaper extends WallpaperService {
             if(renderer!=null&&frame.width()>0&&frame.height()>0)renderer.touch(event.getActionMasked(),event.getX()/frame.width(),event.getY()/frame.height());
         }
         @Override public void onSurfaceDestroyed(SurfaceHolder h){renderer.detach();super.onSurfaceDestroyed(h);}
-        @Override public void onDestroy(){SceneChannel.remove(this);displayManager.unregisterDisplayListener(displays);unregisterReceiver(state);unregisterReceiver(scenes);if(regionObserverRegistered)getContentResolver().unregisterContentObserver(area);if(dimObserverRegistered)getContentResolver().unregisterContentObserver(dimSetting);renderer.close();super.onDestroy();}
+        @Override public void onDestroy(){SceneChannel.remove(this);displayManager.unregisterDisplayListener(displays);unregisterReceiver(state);unregisterReceiver(scenes);if(regionObserverRegistered)getContentResolver().unregisterContentObserver(area);renderer.close();super.onDestroy();}
     }
 }
