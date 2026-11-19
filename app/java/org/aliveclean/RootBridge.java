@@ -38,8 +38,21 @@ final class RootBridge {
             // through root here. Log the module receipt from the app process too:
             // users often filter logcat by package name and would otherwise never
             // see the SystemUI-side diagnostic lines.
-            boolean active=ModuleActivation.active(context);
-            android.util.Log.i("AliveClean","AOSP AOD: no oplus provider; moduleActive="+active);
+            // The receipt is process-lifetime only: replacing the APK kills this
+            // app process and clears NativeClockStatusProvider.module, while a
+            // still-running SystemUI does not re-announce on its own. Ask it to
+            // re-announce and poll briefly, otherwise a healthy module reads false
+            // immediately after an update-install.
+            ModuleActivation.request(context);
+            boolean active=false;
+            for(int i=0;i<8&&!active;i++){
+                try{Thread.sleep(100);}catch(InterruptedException interrupted){
+                    Thread.currentThread().interrupt();break;
+                }
+                active=ModuleActivation.active(context);
+            }
+            android.util.Log.i("AliveClean","AOSP AOD: no oplus provider; moduleActive="+active
+                    +" (after request; home indicator is authoritative)");
             return "壁纸已应用，AOSP 场景切换由系统界面桥接接管";
         }
         String apk=context.getApplicationInfo().sourceDir;

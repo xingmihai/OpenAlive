@@ -181,3 +181,31 @@ KeyguardViewMediator.keyguardGone() 实际在 KeyguardViewMediator$5
 `KeyguardViewMediator` 上仍存在的可用方法：`setShowingLocked(Z, String, Z)`、`handleHide()`、`handleKeyguardDone()`、`cancelKeyguardExitAnimation()`、`finishSurfaceBehindRemoteAnimation(Z)`、`startKeyguardExitAnimation(SurfaceTransition$Params)`——阶段 2 做解锁动画对齐时用这些。
 
 framework 侧（`services.jar` / `framework.jar`）不在此 APK 内，`AospBridge.installFramework` 仍靠运行时日志打印 `AOSP framework=...` 确认。若 Binder 连接报 `AMBIENT_WALLPAPER` 权限拒绝，把 APK 作为 priv-app 安装即可。
+
+
+## 七、`moduleActive=false` 的确切含义（04:54 日志）
+
+日志出现 `AOSP AOD: no oplus provider; moduleActive=false`，说明 **AOD 门槛修复已生效**（不再弹「息屏配置未完成」），但这次 App 进程没拿到 SystemUI 的激活回执。
+
+`NativeClockStatusProvider` 的 `module` 是**纯内存、进程生命周期**的 IBinder 回执，注释写明「never persists readiness across a reboot」。写入方只有 SystemUI 侧的 `ModuleActivationHook`（`Application.attach` 时 announce），读取方是 App 自己的 provider。因此：
+
+- **覆盖安装会杀掉 App 进程 → 回执清空**；SystemUI 是常驻进程，不重启手机就不会重新 announce。这是最常见成因，不等于「模块没注入」。
+- 之前 `prepareAod` 里的 `ModuleActivation.active()` 是**单次直读、不发 request 广播**，所以应用壁纸那一瞬间很容易读到 false，即使首页稍后会轮询变绿。已改为先 `ModuleActivation.request(context)` 再最多轮询 800 ms。
+- **权威判断看首页**：`HomeActivationStatus` 会发 `QUERY_MODULE_ACTIVATION` 广播 + 每 2 秒轮询，指示灯显示「LSP 已激活 / 未激活」。比单次 `moduleActive` 可靠。
+
+同时注意这份 logcat 里**所有行都是 `Uid(value=10257):11234`（App 自己进程）**，没有一条 `com.android.systemui` / `system_server` 的行。要么 Logcat Reader 的「包名」仍填着 `org.aliveclean`（把系统进程全滤掉），要么模块确实没进 SystemUI。绕开过滤最省事：
+
+```sh
+adb logcat -d -s AliveClean                     # 电脑
+su -c 'logcat -d -s AliveClean'                 # 手机 root 终端
+```
+
+**排查顺序（一次做完）**
+
+1. 装最新 artifact（本轮补丁）
+2. LSPosed 管理器：模块开关打开；作用域勾 `系统框架(android)` + `系统界面(com.android.systemui)`。签名从开发密钥换成正式 JKS 后，建议把作用域取消再重勾一次，让 LSPosed 重新记录 APK 路径
+3. **重启手机**（不是重启 App、不是重启 SystemUI）——hook 只在进程启动时注入
+4. 开机后打开 App，**不要重新应用壁纸**，直接看首页两个指示灯：`LSP 已激活` + `ROOT 已授权`
+5. 息屏 → 亮屏 → 解锁，抓 `platform=AOSP`、`AOSP bridge loaded`、`AOSP wakefulness: binderStub=true sleepHooks=1 wakeHooks=1`、`AOSP scene mode=0/1/2`
+
+只要第 4 步 `LSP 已激活`，就说明桥接层已加载，壁纸与场景切换是在跑的；`moduleActive` 那行只是瞬时读数，可以忽略。若重启后仍是「LSP 未激活」，那才是作用域 / LSPosed 框架本身的问题。
