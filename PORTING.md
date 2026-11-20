@@ -340,3 +340,68 @@ DREAMING_STOPPED  -> mode 1 phase=2      Scene mode=1 changed=false
 - 屏幕上是 OpenAlive 的息屏动画而不是原版 AOD
 
 若 `Ambient=true` 出现但 `wallpaperVisible` 仍为 false，说明该 ROM 的 doze 策略另有隐藏逻辑，再进方案 B（壁纸进程自弹 `TYPE_APPLICATION_OVERLAY` 盖住 dream 窗口，需 root 授 `SYSTEM_ALERT_WINDOW`）。
+
+
+---
+
+## 十四、11:27 诊断包：SystemUI 终于注入，补齐 AOD 画面接管
+
+用户把 **NyaZygisk v2.5-383 换成 Zygisk Next 1.5.3 (880) + LSPosed v2.2.1 (7944)** 后导出 `LSPosed_20261120_112722.zip`（125 项）。`modules/zygisksu/module.prop` 与 `modules/zygisk_lsposed/module.prop` 确认了版本，`verbose` 里是 `zn-daemon64 / Zygisk Next monitor ready / preloaded 3/3 modules`。
+
+**决定性变化：`com.android.systemui` 被注入了**，四轮诊断以来第一次：
+
+```
+11:25:52.974 (com.android.systemui)[org.aliveclean,...] AliveClean: handleLoadPackage com.android.systemui
+11:25:52.991 (com.android.systemui)[org.aliveclean,...] AliveClean: AOSP bridge loaded
+11:25:52.992 (com.android.systemui)[org.aliveclean,...] AliveClean: activation hook on ...SystemUIApplicationImpl.onCreate
+11:25:53.096 (com.android.systemui)[org.aliveclean,...] AliveClean: activation receiver registered
+```
+
+framework 侧 8 条 `ambient grant on ContextImpl.*` / `PMS.checkPermission` 全中，`WallpaperInfo ambient hook` 也挂上了。也就是说上一节说的「剩下的钥匙」已经拿到了，可以动 SystemUI 层。
+
+**为什么之前 `Ambient=true` 仍看不到画面**（`win.txt` 窗口 dump 的结论）：
+
+```
+Window #20 org.aliveclean.CleanWallpaper  ty=WALLPAPER  mBaseLayer=11000
+  Surface: shown=false  mDrawState=HAS_DRAWN  mLastHidden=true
+  isOnScreen=false  isVisible=false  isReadyForDisplay()=false
+Window #7  NotificationShade  ty=NOTIFICATION_SHADE  mBaseLayer=171000
+  Surface: shown=true  HAS_DRAWN  isOnScreen=true  isVisible=true
+  pfl=OPTIMIZE_MEASURE HIDE_NON_SYSTEM_OVERLAY_WINDOWS ...
+```
+
+两件事叠加：WMS 判定壁纸窗口不可见（`WallpaperController.isWallpaperVisible`），且 SystemUI 在 dozing 时把 scrim 涂成不透明黑盖住下层。`HIDE_NON_SYSTEM_OVERLAY_WINDOWS` 同时堵死了「App 自己弹 overlay」方案。
+
+**本批修正（双进程各修一半，全部 try-catch 容错）**
+
+1. 新增 `AospDozeHooks.java`（SystemUI 进程）
+   - 从 `DozeScrimController.setDozing(Z)` / `onDozingChanged(Z)` 和 `NotificationPanelViewController.setDozing(Z,Z)` 记录 dozing 状态
+   - `ScrimController.setScrimAlpha(ScrimView, F)` 在 dozing 时把 alpha 强制为 `0f`
+   - 兜底：`updateScrims` / `applyAndDispatchState` / `onPreDraw` 后反射遍历所有 `ScrimView` 字段并 `setAlpha(0f)`，覆盖动画直设 View 的分支
+   - `dozing=false` 立即恢复锁屏正常调暗
+
+2. `AospBridge.installDozeFramework(cl)`（system_server 进程，framework 分支必注入）
+   - hook `WallpaperManagerService.setInAmbientMode(Z, J)` 记录 `ambient` 静态标志——`DozeWallpaperState` 正是通过这个 binder 调用触发壁纸的 `Ambient=true`
+   - hook `WallpaperController.isWallpaperVisible(...)`：`ambient` 时 `setResult(true)`
+   - hook `updateWallpaperVisibility()`：after 里遍历 `mWallpaperTokens` 逐个 `setShownVisibility(true)`
+   - hook `WallpaperWindowToken.updateVisibility()`：after 再兜一次
+   - 只在 `ambient=true` 生效，唤醒后完全不干预
+
+3. `AospBridge.install()` 末尾调 `AospDozeHooks.install(cl)`；`installFramework()` 开头调 `installDozeFramework(cl)`（放在 permission 逻辑的 early return 之前）。`CleanHooks` / `CleanWallpaper` / `wallpaper.xml` 一行未动
+
+**所有候选都来自真机 SystemUI.apk 反编译**（classes2.dex 的 method_ids 精确签名）：`ScrimController.setScrimAlpha(ScrimView,F)` 31 个方法命中、`DozeScrimController` 5 个、`NotificationPanelViewController` 108 个。每处命中数都写进 `XposedBridge.log`，LSPosed 日志页可直接判读。
+
+**验证**（装本批包 → 重启 → 息屏 3 秒以上）
+
+LSPosed「日志」页应同时出现：
+
+```
+AliveClean: framework ambient=true
+AliveClean: SystemUI dozing=true
+AliveClean: ScrimController.setScrimAlpha x1 (force 0 in doze)
+AliveClean: isWallpaperVisible hook x1 (force true in ambient)
+```
+
+`dumpsys window windows` 里 `org.aliveclean.CleanWallpaper` 应从 `shown=false / isVisible=false` 变成 `shown=true / isVisible=true`，屏幕上出现 OpenAlive 息屏动画（系统 AOD 时钟仍会叠在上层）。
+
+若 `framework ambient=true` 有、`SystemUI dozing=true` 没有，说明 dozing 回调类名在这台 ROM 上不同，把日志页那几行贴回来换 hook 点即可；两个都有但窗口仍 hidden，则是 `setShownVisibility` 反射没命中，再补字段级处理。
