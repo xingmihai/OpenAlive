@@ -19,10 +19,10 @@
 - **LineageOS / AOSP 系 ROM**（已在 sm8750 / lineage-24.0 上核对 SystemUI 类名）
 - **锁屏/桌面不需要 LSPosed**：壁纸自身的广播状态机驱动 mode 0/1/2，普通安装即可生效
 - **息屏画面需要 `系统框架(android)` 这一项**：壁纸声明 `supportsAmbientMode=true`，AOSP 才会在 dozing 时保留壁纸窗口并回调 `onAmbientModeChanged`；随之而来的 `AMBIENT_WALLPAPER` 签名权限由 framework hook 精确放行。本机 LSPosed 稳定注入 system_server，这一项一直在工作
-- `系统界面(com.android.systemui)` 现在**也是息屏画面的必要条件**：`AospDozeHooks` 在 dozing 时把 `ScrimController` 的遮罩透明度归零，`AospBridge` 在 framework 侧强制壁纸窗口可见，两者配合才能让息屏显示 OpenAlive 而不是系统 AOD。作用域保持两项不变
+- `系统界面(com.android.systemui)` 现在**也是息屏画面的必要条件**：`AospDozeHooks` 在 dozing 时把 scrim 归零、给 NotificationShade 加 `FLAG_SHOW_WALLPAPER`；`AospBridge` 在 framework 侧自适应探测并 hook 壁纸窗口可见性方法。作用域保持两项不变
 - 需要能注入 SystemUI 的框架组合：已验证 **Zygisk Next 1.5.3 + LSPosed v2.2.1** 可用；NyaZygisk v2.5-383 只注入 system_server，息屏会退回系统 AOD
 - `com.oplus.wallpapers` 在 LineageOS 上不存在，不要找、不要勾
-- 首页指示灯与 LSPosed「日志」页是判断依据：framework 看 `ambient grant on ContextImpl...`，息屏看 `handleLoadPackage com.android.systemui` + `AOSP bridge loaded` + `SystemUI dozing=true`。三者齐全才是完整生效
+- 开机后直接 `su -c 'logcat -v threadtime AliveClean:I *:S'` 即可看全部诊断（framework 与 SystemUI 的 hook 命中数、真实方法名清单都双写进 `AliveClean` tag），不必再导 LSPosed 诊断包
 - 改完作用域仍需**整机重启**，hook 只在进程启动时注入
 
 ## 安装与验证

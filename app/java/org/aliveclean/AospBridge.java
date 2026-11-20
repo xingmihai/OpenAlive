@@ -6,8 +6,10 @@ import android.util.Log;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
+import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -293,18 +295,28 @@ final class AospBridge {
     }
 
     /**
-     * system_server half of the AOD picture takeover.
+     * system_server half of the AOD picture takeover — adaptive version.
      *
-     * AOSP DozeWallpaperState calls IWallpaperManager.setInAmbientMode(true)
-     * on entering DOZE_AOD; our wallpaper receives onAmbientModeChanged(true)
-     * and renders mode 0. But WallpaperController still decides the wallpaper
-     * window is not visible (dump showed Surface shown=false / isVisible=false
-     * with mDrawState=HAS_DRAWN), so nothing reaches the display.
+     * The 17:09 log proves every signal already works:
+     *   framework ambient=true / SystemUI dozing=true / Ambient=true duration=500
+     *   AOSP scene mode=0/1/2 / moduleActive=true / render=true in STATE_DOZE.
+     * Only the window compositing still hides the wallpaper. The previous
+     * build hardcoded "WallpaperController.isWallpaperVisible" and
+     * "WallpaperWindowToken.updateVisibility" + "setShownVisibility", which are
+     * private framework names that differ across Android 17 builds.
      *
-     * Hook the ambient setter to record the state, then short-circuit the
-     * visibility decision ONLY while ambient. The stock lockscreen / launcher
-     * behavior is untouched because ambient flips back to false on wake.
+     * Instead of guessing, enumerate the real declared methods (including
+     * superclasses) at install time, log the candidate list, and hook every
+     * visibility/hidden/shown/ambient related one with a heuristic callback.
+     * All diagnostics are written to BOTH XposedBridge.log and Log.i(TAG), so a
+     * plain `logcat -s AliveClean` after boot shows everything without needing
+     * the LSPosed log page or a diagnostic zip.
      */
+    private static final String[] DOZE_FW_CLASSES = new String[]{
+            "com.android.server.wm.WallpaperController",
+            "com.android.server.wm.WallpaperWindowToken",
+            "com.android.server.wm.WindowToken"};
+
     private static void installDozeFramework(ClassLoader cl) {
         Class<?> wms = firstExisting(cl,
                 "com.android.server.wallpaper.WallpaperManagerService");
@@ -318,88 +330,121 @@ final class AospBridge {
                                         boolean value = (Boolean) p.args[0];
                                         if (ambient != value) {
                                             ambient = value;
-                                            XposedBridge.log("AliveClean: framework ambient=" + value);
-                                            Log.i(TAG, "framework ambient=" + value);
+                                            dozeLog("framework ambient=" + value);
                                         }
                                     }
                                 } catch (Throwable ignored) {}
                             }
                         }).size();
-                XposedBridge.log("AliveClean: setInAmbientMode hook x" + n);
-                if (n == 0) Log.w(TAG, "setInAmbientMode MISS");
+                dozeLog("setInAmbientMode hook x" + n + (n == 0 ? " MISS" : ""));
             } catch (Throwable error) {
                 failure("setInAmbientMode", error);
             }
         } else {
-            XposedBridge.log("AliveClean: WallpaperManagerService missing");
+            dozeLog("WallpaperManagerService MISSING");
         }
 
-        Class<?> controller = XposedHelpers.findClassIfExists(
-                "com.android.server.wm.WallpaperController", cl);
-        if (controller != null) {
-            try {
-                int n = XposedBridge.hookAllMethods(controller, "isWallpaperVisible",
-                        new XC_MethodHook() {
-                            @Override protected void afterHookedMethod(MethodHookParam p) {
-                                if (ambient) p.setResult(true);
-                            }
-                        }).size();
-                XposedBridge.log("AliveClean: isWallpaperVisible hook x" + n
-                        + (n > 0 ? " (force true in ambient)" : " MISS"));
-            } catch (Throwable error) {
-                failure("isWallpaperVisible", error);
+        for (String name : DOZE_FW_CLASSES) {
+            Class<?> c = XposedHelpers.findClassIfExists(name, cl);
+            if (c == null) {
+                dozeLog("doze fw MISSING " + name);
+                continue;
             }
-            try {
-                int n = XposedBridge.hookAllMethods(controller, "updateWallpaperVisibility",
-                        new XC_MethodHook() {
-                            @Override protected void afterHookedMethod(MethodHookParam p) {
-                                if (!ambient) return;
-                                try {
-                                    Object tokens = XposedHelpers.getObjectField(
-                                            p.thisObject, "mWallpaperTokens");
-                                    if (tokens instanceof Iterable<?>) {
-                                        for (Object token : (Iterable<?>) tokens) {
-                                            if (token == null) continue;
-                                            try {
-                                                XposedHelpers.callMethod(token,
-                                                        "setShownVisibility", true);
-                                            } catch (Throwable ignored) {}
-                                        }
-                                    }
-                                } catch (Throwable ignored) {}
-                            }
-                        }).size();
-                XposedBridge.log("AliveClean: updateWallpaperVisibility hook x" + n);
-            } catch (Throwable error) {
-                failure("updateWallpaperVisibility", error);
+            java.util.Set<String> seen = new HashSet<String>();
+            StringBuilder listing = new StringBuilder();
+            int hooked = 0;
+            for (Class<?> k = c; k != null && k != Object.class; k = k.getSuperclass()) {
+                Method[] methods;
+                try {
+                    methods = k.getDeclaredMethods();
+                } catch (Throwable error) {
+                    continue;
+                }
+                for (Method m : methods) {
+                    String low = m.getName().toLowerCase(Locale.ROOT);
+                    if (!(low.contains("visib") || low.contains("shown")
+                            || low.contains("hidden") || low.contains("ambient")
+                            || low.contains("doz") || low.contains("wallpaper"))) continue;
+                    String key = m.getName() + "#" + m.getParameterTypes().length;
+                    if (!seen.add(key)) continue;
+                    if (listing.length() < 1600) listing.append(key).append(' ');
+                    if (hookVisibilityMethod(m)) hooked++;
+                }
             }
-        } else {
-            XposedBridge.log("AliveClean: WallpaperController missing");
+            dozeLog("doze fw " + name + " hooked=" + hooked
+                    + " candidates: " + listing);
         }
 
-        Class<?> token = XposedHelpers.findClassIfExists(
-                "com.android.server.wm.WallpaperWindowToken", cl);
-        if (token != null) {
-            try {
-                int n = XposedBridge.hookAllMethods(token, "updateVisibility",
-                        new XC_MethodHook() {
-                            @Override protected void afterHookedMethod(MethodHookParam p) {
-                                if (!ambient) return;
-                                try {
-                                    XposedHelpers.callMethod(
-                                            p.thisObject, "setShownVisibility", true);
-                                } catch (Throwable ignored) {}
-                            }
-                        }).size();
-                XposedBridge.log("AliveClean: WallpaperWindowToken.updateVisibility hook x" + n);
-            } catch (Throwable error) {
-                failure("WallpaperWindowToken.updateVisibility", error);
-            }
-        } else {
-            XposedBridge.log("AliveClean: WallpaperWindowToken missing");
-        }
+        dozeLog("doze framework hooks installed");
+    }
 
-        XposedBridge.log("AliveClean: framework doze hooks installed");
+    /** Heuristic hook: force "visible" only while ambient, only for wallpaper objects. */
+    private static boolean hookVisibilityMethod(final Method m) {
+        final String n = m.getName().toLowerCase(Locale.ROOT);
+        final Class<?> ret = m.getReturnType();
+        final Class<?>[] ps = m.getParameterTypes();
+        try {
+            XposedBridge.hookMethod(m, new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam p) {
+                    if (!ambient || !isWallpaperObject(p.thisObject)) return;
+                    for (int i = 0; i < ps.length && i < p.args.length; i++) {
+                        try {
+                            if (ps[i] == boolean.class || ps[i] == Boolean.class) {
+                                p.args[i] = !n.contains("hidden");
+                            } else if ((ps[i] == int.class || ps[i] == Integer.class)
+                                    && (n.contains("visib") || n.contains("shown")
+                                        || n.contains("hidden"))) {
+                                p.args[i] = 0; // View.VISIBLE / not hidden
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                }
+                @Override protected void afterHookedMethod(MethodHookParam p) {
+                    if (!ambient || !isWallpaperObject(p.thisObject)) return;
+                    if (ret == boolean.class || ret == Boolean.class) {
+                        if (n.startsWith("is") || n.startsWith("has")
+                                || n.contains("visible")) {
+                            p.setResult(true);
+                        }
+                    } else {
+                        forceShown(p.thisObject);
+                    }
+                }
+            });
+            return true;
+        } catch (Throwable error) {
+            return false;
+        }
+    }
+
+    private static boolean isWallpaperObject(Object o) {
+        if (o == null) return false;
+        for (Class<?> k = o.getClass(); k != null && k != Object.class; k = k.getSuperclass()) {
+            String n = k.getName();
+            if (n.contains("WallpaperController") || n.contains("WallpaperWindowToken")) return true;
+        }
+        return false;
+    }
+
+    /** Best-effort: flip any shown/visible setter on a wallpaper token after a state update. */
+    private static void forceShown(Object o) {
+        if (o == null) return;
+        try { XposedHelpers.callMethod(o, "setShownVisibility", true); } catch (Throwable ignored) {}
+        try { XposedHelpers.callMethod(o, "setClientVisible", true); } catch (Throwable ignored) {}
+        try { XposedHelpers.callMethod(o, "setVisibility", 0); } catch (Throwable ignored) {}
+        try {
+            Object tokens = XposedHelpers.getObjectField(o, "mWallpaperTokens");
+            if (tokens instanceof Iterable<?>) {
+                for (Object t : (Iterable<?>) tokens) {
+                    if (t != null && t != o) forceShown(t);
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void dozeLog(String message) {
+        XposedBridge.log("AliveClean: " + message);
+        Log.i(TAG, message);
     }
 
     private static Class<?> firstExisting(ClassLoader cl, String... names) {

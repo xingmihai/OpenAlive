@@ -405,3 +405,54 @@ AliveClean: isWallpaperVisible hook x1 (force true in ambient)
 `dumpsys window windows` 里 `org.aliveclean.CleanWallpaper` 应从 `shown=false / isVisible=false` 变成 `shown=true / isVisible=true`，屏幕上出现 OpenAlive 息屏动画（系统 AOD 时钟仍会叠在上层）。
 
 若 `framework ambient=true` 有、`SystemUI dozing=true` 没有，说明 dozing 回调类名在这台 ROM 上不同，把日志页那几行贴回来换 hook 点即可；两个都有但窗口仍 hidden，则是 `setShownVisibility` 反射没命中，再补字段级处理。
+
+
+---
+
+## 十五、17:09 日志：信号链全通，改为自适应窗口可见性 hook
+
+用户装 `44669274891`（`90afc60a`）并换 **Zygisk Next 1.5.3 + LSPosed v2.2.1** 后抓 `logcat_2026-11-20_17-09-40.txt`，反馈「息屏还是不行」。这份日志其实是**迄今最完整的一次**，证明前面所有链路都已经闭合：
+
+```
+Uid 10140  AOSP wallpaper selected=true pkg=org.aliveclean      模块注入 SystemUI 且选中本壁纸
+Uid 10140  AOSP scene channel connected                        Binder 通道建立
+Uid 10257  moduleActive=true                                  首页 LSP 指示灯转绿（历史首次）
+Uid 10140  AOSP scene mode=0 phase=1 state=AOD selected=true   SystemUI 侧场景信号
+Uid 1000   framework ambient=true                             system_server 侧 setInAmbientMode hook 命中
+Uid 10257  Ambient=true duration=500                          壁纸收到 onAmbientModeChanged(true)
+Uid 10140  SystemUI dozing=true                               AospDozeHooks 的 dozing 跟踪命中
+Uid 10257  Scene mode=0 changed=true ...                      场景状态机
+Uid 10257  Visibility: ... displayState=3 render=true ... ambient=true
+```
+
+`displayState=3 (STATE_DOZE)` 时 `render=true`，`ambient||wallpaperVisible` 的兜底生效；`displayState=1 (STATE_OFF)` 时 `render=false` 是正常省电。长息屏 16 分钟（16:53:42 → 17:09:16）里 mode 0 稳定保持，亮屏/解锁 mode 1/2 也正常。**唯一没解决的是窗口合成层**：`wallpaperVisible=false` 始终没变，WMS 仍把壁纸窗口标记 hidden，渲染器在往一个未提交的 Surface 上画。
+
+**为什么上一版没生效**：`installDozeFramework` 硬编码了 `WallpaperController.isWallpaperVisible`、`updateWallpaperVisibility`、`WallpaperWindowToken.updateVisibility` + `setShownVisibility`。这些是 framework 私有方法名，Android 17 / LineageOS 24 上很可能已改名或重构；而且那些 `XposedBridge.log` 只进 LSPosed 日志页，不进 `AliveClean` tag，用户抓的 logcat 里看不到命中数，无从判断。
+
+**本批修正：不再猜方法名**
+
+1. `AospBridge.installDozeFramework` 改为**自适应**：对 `WallpaperController` / `WallpaperWindowToken` / `WindowToken` 枚举自身及所有父类的 `declaredMethods`，把名字含 `visib / shown / hidden / ambient / doz / wallpaper` 的候选清单打进日志，然后用统一启发式 hook 全部挂上
+   - `before`：boolean 参数强制 `true`（名字含 `hidden` 则 `false`），int 可见性参数强制 `0 (VISIBLE)`
+   - `after`：boolean 返回且 `is/has/visible` 开头 → `setResult(true)`；其余 → `forceShown()` 反射调 `setShownVisibility / setClientVisible / setVisibility` 并遍历 `mWallpaperTokens`
+   - `isWallpaperObject()` 严格限制只对 `WallpaperController` / `WallpaperWindowToken` 实例生效，避免误伤普通窗口
+   - **所有诊断同时写 `XposedBridge.log` 和 `Log.i(TAG, ...)`**，开机后一次 `logcat -s AliveClean` 就能看全
+2. `AospDozeHooks` 重写
+   - 枚举 `ScrimController` 全部 `alpha/scrim/tint/color` 方法并逐个 hook，dozing 时把 float 参数归零、tint/color 的 int 参数置透明；不再只赌 `setScrimAlpha`
+   - 反射 sweep 里额外清零 `ScrimView` **自身**的 `mAlpha / mTint / mColor` 字段（`ScrimView` 自定义 draw 不走 `View.setAlpha`）
+   - 新增关键项：hook `NotificationShadeWindowControllerImpl.apply / applyWindowLayoutParams / batchApplyWindowLayoutParams / setPanelVisible / onIsOnOrGoingToDreamChanged`，反射找到 `WindowManager.LayoutParams` 字段并在 dozing 时加 `FLAG_SHOW_WALLPAPER (0x100000)`。上一轮 `win.txt` 里 NotificationShade 的 fl 没有这个 flag，且 `wm_wallpaper_surface` 日志显示壁纸 surface 被 WMS 主动隐藏 —— 这是让 WMS 保留壁纸 target 的直接手段
+3. `CleanWallpaper` / `CleanHooks` / `wallpaper.xml` 未动
+
+**验证**（装本批包 → 重启 → `su -c 'logcat -v threadtime AliveClean:I *:S'`）
+
+一次开机日志里应能看到：
+
+```
+AliveClean: setInAmbientMode hook x1
+AliveClean: doze fw com.android.server.wm.WallpaperController hooked=N candidates: isWallpaperVisible#0 ...
+AliveClean: doze fw com.android.server.wm.WallpaperWindowToken hooked=N candidates: ...
+AliveClean: ScrimController alpha/color hooks xN methods: ...
+AliveClean: NotificationShade SHOW_WALLPAPER hooks xN
+AliveClean: AOSP doze hooks installed
+```
+
+若某个类 `MISSING` 或 `hooked=0`，真机方法名就写在 candidates 清单里，照它精确补一个 hook 即可，不用再猜。息屏后复核 `Wallpaper visible=true` 是否出现；仍是 false 就把这几行连同息屏时的 `dumpsys window windows | grep -A22 CleanWallpaper` 贴回来，看 `Surface: shown` 有没有从 `false` 翻到 `true`。
