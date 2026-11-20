@@ -142,7 +142,9 @@ public final class CleanWallpaper extends WallpaperService {
             // display state itself as a second, authoritative trigger for mode 0.
             if(!isPreview()&&(state==android.view.Display.STATE_DOZE||state==android.view.Display.STATE_DOZE_SUSPEND)
                     &&scenesState.mode()!=0)scene(0,true,android.os.SystemClock.uptimeMillis(),1,0,Float.NaN,Float.NaN);
-            boolean next=wallpaperVisible&&state!=android.view.Display.STATE_UNKNOWN&&state!=android.view.Display.STATE_OFF;
+            // In ambient mode the framework owns wallpaper visibility; a late
+            // onVisibilityChanged(false) must not stop the AOD renderer.
+            boolean next=(ambient||wallpaperVisible)&&state!=android.view.Display.STATE_UNKNOWN&&state!=android.view.Display.STATE_OFF;
             boolean displayChanged=state!=lastDisplayState;
             lastDisplayState=state;
             // The decisive evidence for a blank AOD: if SystemUI hides the
@@ -152,7 +154,7 @@ public final class CleanWallpaper extends WallpaperService {
             if(next!=renderVisible||displayChanged){
                 android.util.Log.i("AliveClean","Visibility: wallpaperVisible="+wallpaperVisible
                         +" displayState="+state+" render="+next+" (was "+renderVisible+")"
-                        +" mode="+scenesState.mode());
+                        +" mode="+scenesState.mode()+" ambient="+ambient);
             }
             if(next!=renderVisible){renderVisible=next;renderer.visible(next);}
             else if(next&&displayChanged)renderer.resumeDisplay();
@@ -178,7 +180,15 @@ public final class CleanWallpaper extends WallpaperService {
             refreshVisibility();
         }
         // Framework @SystemApi callback: absent from the public SDK's stubs.
-        public void onAmbientModeChanged(boolean inAmbientMode,long duration){ambient=inAmbientMode;{if(Diagnostics.TRACE)android.util.Log.i("AliveClean","Ambient="+ambient);}update();refreshVisibility();}
+        public void onAmbientModeChanged(boolean inAmbientMode,long duration){
+            ambient=inAmbientMode;
+            // AOSP only calls this for supportsAmbientMode=true wallpapers,
+            // and keeps the wallpaper window visible while dozing. It is the
+            // single decisive signal that our AOD picture can reach the screen.
+            android.util.Log.i("AliveClean","Ambient="+inAmbientMode+" duration="+duration);
+            if(inAmbientMode&&!isPreview())scene(0,true,android.os.SystemClock.uptimeMillis(),1,0,Float.NaN,Float.NaN);
+            update();refreshVisibility();
+        }
         @Override public Bundle onCommand(String action,int x,int y,int z,Bundle extras,boolean resultRequested){
             {if(Diagnostics.TRACE)android.util.Log.i("AliveClean","Wallpaper command="+action+" authority="+scenesState.authoritative());}
             if(scenesState.authoritative())return super.onCommand(action,x,y,z,extras,resultRequested);

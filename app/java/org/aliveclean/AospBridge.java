@@ -191,43 +191,84 @@ final class AospBridge {
     }
 
     /**
-     * system_server side: AOSP has no com.android.server.pm.IPackageManagerBase.
-     * AMBIENT_WALLPAPER is a signature|privileged permission, so a normally
-     * installed module cannot hold it. Grant it on the by-name check path.
+     * system_server side: grant AMBIENT_WALLPAPER for live-wallpaper setup.
      *
-     * If your build checks by uid only, install the APK as a priv-app instead;
-     * ClassNameProbe below records which path is available in logcat.
+     * WallpaperManagerService.setWallpaperComponentChecked() refuses a wallpaper
+     * with supportsAmbientMode=true unless the caller holds this
+     * signature|privileged permission. On AOSP the check goes through
+     * ContextImpl.checkCallingOrSelfPermission (not a by-name PackageManager
+     * lookup), so the earlier PMS-only hook could miss it and produce
+     * "Selected service does not have android.permission.AMBIENT_WALLPAPER".
+     *
+     * Hook every plausible check/enforce entry point on ContextImpl plus the
+     * PackageManagerService by-name/uid paths, and only ever short-circuit the
+     * single AMBIENT_WALLPAPER permission. Nothing else is granted.
      */
     static void installFramework(ClassLoader cl) {
         if (cl == null) return;
+
+        final String PERM = "android.permission.AMBIENT_WALLPAPER";
+        XC_MethodHook grantInt = new XC_MethodHook() {
+            @Override protected void beforeHookedMethod(MethodHookParam p) {
+                if (p.args.length > 0 && PERM.equals(p.args[0])) {
+                    p.setResult(PackageManager.PERMISSION_GRANTED);
+                }
+            }
+        };
+        XC_MethodHook grantVoid = new XC_MethodHook() {
+            @Override protected void beforeHookedMethod(MethodHookParam p) {
+                if (p.args.length > 0 && PERM.equals(p.args[0])) {
+                    // enforce*() returns void and throws when denied; returning
+                    // early suppresses the SecurityException.
+                    p.setResult(null);
+                }
+            }
+        };
+
+        Class<?> contextImpl = XposedHelpers.findClassIfExists("android.app.ContextImpl", cl);
+        if (contextImpl != null) {
+            for (String method : new String[]{
+                    "checkCallingOrSelfPermission", "checkCallingPermission",
+                    "checkSelfPermission", "checkPermission"}) {
+                try {
+                    if (!XposedBridge.hookAllMethods(contextImpl, method, grantInt).isEmpty()) {
+                        Log.i(TAG, "AOSP permission hook ContextImpl." + method);
+                        XposedBridge.log("AliveClean: ambient grant on ContextImpl." + method);
+                    }
+                } catch (Throwable error) {
+                    failure("ContextImpl " + method, error);
+                }
+            }
+            for (String method : new String[]{
+                    "enforceCallingOrSelfPermission", "enforceCallingPermission",
+                    "enforcePermission"}) {
+                try {
+                    if (!XposedBridge.hookAllMethods(contextImpl, method, grantVoid).isEmpty()) {
+                        Log.i(TAG, "AOSP permission hook ContextImpl." + method);
+                        XposedBridge.log("AliveClean: ambient grant on ContextImpl." + method);
+                    }
+                } catch (Throwable error) {
+                    failure("ContextImpl " + method, error);
+                }
+            }
+        } else {
+            XposedBridge.log("AliveClean: ContextImpl missing; falling back to PMS only");
+        }
+
         Class<?> target = firstExisting(cl,
                 "com.android.server.pm.PackageManagerService",
                 "com.android.server.pm.PackageManagerService$IPackageManagerImpl",
                 "com.android.server.pm.IPackageManagerImpl",
                 "com.android.server.pm.PackageManagerServiceUtils");
-        Log.i(TAG, "AOSP framework=" + (target == null ? "missing, use priv-app" : target.getName()));
+        Log.i(TAG, "AOSP framework=" + (target == null ? "missing" : target.getName()));
         if (target == null) {
-            XposedBridge.log("AliveClean: AOSP permission adapter unavailable; use priv-app install");
+            XposedBridge.log("AliveClean: PMS permission adapter unavailable");
             return;
         }
-        XC_MethodHook grant = new XC_MethodHook() {
-            @Override protected void beforeHookedMethod(MethodHookParam p) {
-                boolean ambient = false;
-                boolean ours = false;
-                for (Object arg : p.args) {
-                    if ("android.permission.AMBIENT_WALLPAPER".equals(arg)) ambient = true;
-                    if ("org.aliveclean".equals(arg)) ours = true;
-                }
-                if (ambient && ours) {
-                    p.setResult(PackageManager.PERMISSION_GRANTED);
-                }
-            }
-        };
         for (String method : new String[]{"checkPermission", "checkUidPermission"}) {
             try {
-                if (!XposedBridge.hookAllMethods(target, method, grant).isEmpty()) {
-                    XposedBridge.log("AliveClean: AOSP ambient permission adapter on "
-                            + target.getName() + "." + method);
+                if (!XposedBridge.hookAllMethods(target, method, grantInt).isEmpty()) {
+                    XposedBridge.log("AliveClean: ambient grant on " + target.getName() + "." + method);
                     Log.i(TAG, "AOSP permission hook " + target.getName() + "." + method);
                 }
             } catch (Throwable error) {

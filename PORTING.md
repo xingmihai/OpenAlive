@@ -301,3 +301,42 @@ DREAMING_STOPPED  -> mode 1 phase=2      Scene mode=1 changed=false
 - 息屏期间出现 `Visibility: ... wallpaperVisible=false ... mode=0` → **窗口被 DozeService 隐藏**，画面看不到是窗口层级问题，进阶段 1：在壁纸进程弹 AOD 浮层（不碰 LSPosed）
 - 息屏期间 `wallpaperVisible=true render=true mode=0`，且用户肉眼看到动画/时钟 → 主线完成
 - 解锁后出现 `Unlock fallback: keyguard gone -> mode 2` 或 `Scene mode=2 changed=true` → mode 2 已闭合
+
+
+---
+
+## 十三、10:49 日志：息屏仍是原版 AOD —— 恢复 ambient wallpaper 机制
+
+用户反馈「息屏时还是原版的」，日志（`logcat_2026-11-20_10-49-04.txt`）给出完整证据链。状态机依旧完美：
+
+```
+10:48:16.497 DREAMING_STARTED -> mode 0   Scene mode=0 changed=true
+10:48:17.849 Wallpaper visible=false
+             Visibility: wallpaperVisible=false displayState=2 render=false (was true) mode=0
+10:48:20.514 Visibility: wallpaperVisible=false displayState=3 render=false (was false) mode=0
+10:48:26.647 Visibility: wallpaperVisible=false displayState=2 render=false (was false) mode=0
+10:48:26.696 SCREEN_ON -> mode 1         Scene mode=1 changed=true
+10:48:46.980 Unlock fallback: keyguard gone -> mode 2   Scene mode=2 changed=true
+```
+
+**mode 0 正确、锁屏/桌面/解锁兜底全部闭合，但整个息屏期间 `wallpaperVisible=false`、`render=false` 持续约 9 秒。** 这正是第十二节预设的第一种情形：不是渲染器坏了，是**系统把壁纸窗口藏了**。
+
+**根因是 `supportsAmbientMode="false"`**。AOSP 的 `DisplayPolicy` 在 dozing 时：若壁纸不支持 ambient mode，就隐藏壁纸窗口（AOD 完全由 SystemUI 的 `DozeService` 自绘）；若支持，则**保留壁纸窗口可见**并调用 `WallpaperManagerService.setInAmbientMode` → `WallpaperService.Engine.onAmbientModeChanged(true, duration)`。我们为绕开 `AMBIENT_WALLPAPER` 权限把声明改成 false，壁纸确实能装上了，代价就是息屏永远看不到自己的画面。
+
+**这一轮把它修回来，且不再依赖运气**
+
+1. `app/res/xml/wallpaper.xml` → `supportsAmbientMode="true"`，让系统原生机制接管 AOD 期间的壁纸窗口可见性
+2. `CleanHooks` 恢复 `android` 分支调用 `AospBridge.installFramework`，并保留 `WallpaperInfo.supportsAmbientMode` 兜底 hook
+3. `AospBridge.installFramework` **重写并扩大覆盖**：`WallpaperManagerService.setWallpaperComponentChecked` 走的是 `ContextImpl.checkCallingOrSelfPermission`（检查调用者权限），而不是按包名的 PMS 查询 —— 旧 hook 只挂了 `PackageManagerService.checkPermission/checkUidPermission` 且要求 args 里出现 `org.aliveclean`，正是 06:22 那次 `SecurityException: Selected service does not have android.permission.AMBIENT_WALLPAPER` 的漏网点。现在同时 hook `ContextImpl` 的 4 个 `check*` + 3 个 `enforce*`，以及 PMS 的 `checkPermission/checkUidPermission`，**只**对 `AMBIENT_WALLPAPER` 这一项短路，其他权限一律不动
+4. `CleanWallpaper.onAmbientModeChanged` 改为无条件日志 + 直接 `scene(0, phase=1)`；`refreshVisibility()` 在 `ambient=true` 时忽略迟到的 `onVisibilityChanged(false)`，保持 `renderer.visible(true)`，`STATE_OFF` 仍会停渲染（不额外耗电）
+
+三轮诊断包已确认 LSPosed 在本机**稳定注入 `android`/system_server**（只有 SystemUI 注不进去），所以这个依赖是可靠的。
+
+**验证点**（装本批包 → 重启 → 重新应用一次壁纸 → 息屏）
+
+- 应用壁纸时不再出现 `Selected service does not have ... AMBIENT_WALLPAPER`
+- LSPosed「日志」页出现多条 `AliveClean: ambient grant on ContextImpl.checkCallingOrSelfPermission` 等
+- 息屏日志出现 `AliveClean: Ambient=true duration=...`、`Visibility: ... render=true ... mode=0 ambient=true`
+- 屏幕上是 OpenAlive 的息屏动画而不是原版 AOD
+
+若 `Ambient=true` 出现但 `wallpaperVisible` 仍为 false，说明该 ROM 的 doze 策略另有隐藏逻辑，再进方案 B（壁纸进程自弹 `TYPE_APPLICATION_OVERLAY` 盖住 dream 窗口，需 root 授 `SYSTEM_ALERT_WINDOW`）。

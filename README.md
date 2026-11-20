@@ -17,10 +17,11 @@
 ## 要求
 
 - **LineageOS / AOSP 系 ROM**（已在 sm8750 / lineage-24.0 上核对 SystemUI 类名）
-- **壁纸本身不需要 Root 或 LSPosed**：标准动态壁纸，应用后锁屏/桌面/息屏场景即可生效
-- Root + LSPosed 仅用于可选的精细场景信号（生物解锁、wakefulness），作用域保持 `系统框架(android)` + `系统界面(com.android.systemui)`
+- **锁屏/桌面不需要 LSPosed**：壁纸自身的广播状态机驱动 mode 0/1/2，普通安装即可生效
+- **息屏画面需要 `系统框架(android)` 这一项**：壁纸声明 `supportsAmbientMode=true`，AOSP 才会在 dozing 时保留壁纸窗口并回调 `onAmbientModeChanged`；随之而来的 `AMBIENT_WALLPAPER` 签名权限由 framework hook 精确放行。本机 LSPosed 稳定注入 system_server，这一项一直在工作
+- `系统界面(com.android.systemui)` 是可选增强（生物解锁 / wakefulness），作用域仍保留两项，不用改
 - `com.oplus.wallpapers` 在 LineageOS 上不存在，不要找、不要勾
-- 首页 `LSP 未激活` **不代表壁纸坏了**；这台 NyaZygisk/KernelSU 组合下 LSPosed 只注入 system_server、不注入 SystemUI，属已知现象
+- 首页 `LSP 未激活` **不代表壁纸坏了**：它只反映 SystemUI 注入状态；本机 NyaZygisk/KernelSU 只注入 system_server。看 LSPosed「日志」页有没有 `ambient grant on ContextImpl...` 才是判断 framework 是否生效的依据
 - 改完作用域仍需**整机重启**，hook 只在进程启动时注入
 
 ## 安装与验证
