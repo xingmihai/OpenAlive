@@ -268,3 +268,36 @@ su -c 'logcat -v threadtime AliveClean:I *:S'
 ```
 
 息屏 → 亮屏 → 解锁，应看到 mode `0 → 1 → 2` 各一条 `changed=true`。若 `Screen event=...SCREEN_OFF` 出现但 `Scene mode=0 changed=false`，说明 `SceneState` 相位被前序事件卡住，把三行贴回来即可定位；若连 `Wallpaper engine created` 都没有，才是壁纸服务没被绑定。
+
+
+---
+
+## 十二、10:32 日志：mode 0/1 稳定，补齐窗口可见性与解锁兜底
+
+用户按建议息屏停了 **10.8 秒**（10:32:18.839 → 29.648），两份日志（`su logcat` 与 Logcat Reader 导出）内容一致：
+
+```
+DREAMING_STARTED -> mode 0 phase=1      Scene mode=0 changed=true
+SCREEN_OFF        -> mode 0 phase=1      Scene mode=0 changed=false   (去重正常)
+SCREEN_ON         -> mode 1 phase=2      Scene mode=1 changed=true
+DREAMING_STOPPED  -> mode 1 phase=2      Scene mode=1 changed=false
+```
+
+**结论：场景状态机已完全跑通**，mode 0 在 10.8 秒里稳定保持，`DREAMING_*` 与 `SCREEN_*` 同毫秒到达时去重正确，相位链 `1 → 2` 闭合，下次息屏 `phase=1` 可正常回 0。全程不依赖 LSPosed（`moduleActive=false` 可忽略）。`E/org.aliveclean: Invalid resource ID 0x00000000` 出现 4 次，仍是内嵌魅族编辑器 `classes2.dex` 的资源噪声，与 `CleanWallpaper` 无关。
+
+**两个剩余问题**
+
+1. **日志里没有 `USER_PRESENT` / mode 2**：这次停在亮屏，未解锁；但生物解锁直达桌面的 ROM 也常丢 `ACTION_USER_PRESENT`。原实现只靠这一个广播，桌面可能卡在 mode 1
+2. **日志仍不能证明「屏幕上有画面」**：`onVisibilityChanged` 与 `refreshVisibility` 当时还是 `Diagnostics.TRACE` 门控。本机 `mDozeScreenState=2`（AOD 期间 Display 停在 `STATE_ON`），若 SystemUI 的 `DozeService` 在 dozing 时把壁纸窗口隐藏（`onVisibilityChanged(false)`），`renderer.visible(false)` 会关掉画面 —— **mode 0 正确但屏幕一片黑**，这正是需要区分的情形
+
+**本批修正（不改渲染链路）**
+
+1. `onVisibilityChanged` 日志无条件化，并新增 `Visibility: wallpaperVisible=… displayState=… render=… mode=…`，只在窗口可见性或 Display state 真正变化时打印，10 秒息屏不会刷屏
+2. 新增解锁兜底：窗口重新可见、`scenesState.mode()==1` 且 `KeyguardManager.isKeyguardLocked()==false` 时补 `scene(2, phase=3)`。相位推演：`phase=2 → eventPhase=3,next=2` 通过 `SceneState.accept`，去重由 `mode()==1` 保证，之后再次息屏 `phase=1,next=0` 也能正常回落
+3. 不动 `SceneState`、`RenderLoop`、`wallpaper.xml`、`CleanHooks`、`AospSceneLink`
+
+**下一次日志直接判读**
+
+- 息屏期间出现 `Visibility: ... wallpaperVisible=false ... mode=0` → **窗口被 DozeService 隐藏**，画面看不到是窗口层级问题，进阶段 1：在壁纸进程弹 AOD 浮层（不碰 LSPosed）
+- 息屏期间 `wallpaperVisible=true render=true mode=0`，且用户肉眼看到动画/时钟 → 主线完成
+- 解锁后出现 `Unlock fallback: keyguard gone -> mode 2` 或 `Scene mode=2 changed=true` → mode 2 已闭合

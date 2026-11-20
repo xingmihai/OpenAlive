@@ -145,10 +145,38 @@ public final class CleanWallpaper extends WallpaperService {
             boolean next=wallpaperVisible&&state!=android.view.Display.STATE_UNKNOWN&&state!=android.view.Display.STATE_OFF;
             boolean displayChanged=state!=lastDisplayState;
             lastDisplayState=state;
+            // The decisive evidence for a blank AOD: if SystemUI hides the
+            // wallpaper window while DozeService is up, renderer.visible(false)
+            // kills the picture even though mode 0 is correct. Log only on a
+            // real change so a 10s doze does not flood the buffer.
+            if(next!=renderVisible||displayChanged){
+                android.util.Log.i("AliveClean","Visibility: wallpaperVisible="+wallpaperVisible
+                        +" displayState="+state+" render="+next+" (was "+renderVisible+")"
+                        +" mode="+scenesState.mode());
+            }
             if(next!=renderVisible){renderVisible=next;renderer.visible(next);}
             else if(next&&displayChanged)renderer.resumeDisplay();
         }
-        @Override public void onVisibilityChanged(boolean visible){{if(Diagnostics.TRACE)android.util.Log.i("AliveClean","Wallpaper visible="+visible);}wallpaperVisible=visible;if(visible)update();refreshVisibility();}
+        @Override public void onVisibilityChanged(boolean visible){
+            android.util.Log.i("AliveClean","Wallpaper visible="+visible);
+            wallpaperVisible=visible;
+            if(visible){
+                update();
+                // Fingerprint / face unlock straight to the launcher often
+                // never delivers ACTION_USER_PRESENT (or delivers it after the
+                // wallpaper window is already visible again), leaving the
+                // desktop stuck in mode 1. Complete the transition ourselves
+                // as soon as the keyguard is actually gone.
+                if(!isPreview()&&scenesState.mode()==1){
+                    KeyguardManager k=getSystemService(KeyguardManager.class);
+                    if(k!=null&&!k.isKeyguardLocked()){
+                        android.util.Log.i("AliveClean","Unlock fallback: keyguard gone -> mode 2");
+                        scene(2,true,android.os.SystemClock.uptimeMillis(),3,0,Float.NaN,Float.NaN);
+                    }
+                }
+            }
+            refreshVisibility();
+        }
         // Framework @SystemApi callback: absent from the public SDK's stubs.
         public void onAmbientModeChanged(boolean inAmbientMode,long duration){ambient=inAmbientMode;{if(Diagnostics.TRACE)android.util.Log.i("AliveClean","Ambient="+ambient);}update();refreshVisibility();}
         @Override public Bundle onCommand(String action,int x,int y,int z,Bundle extras,boolean resultRequested){
